@@ -1,0 +1,49 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/qwen3-coder:latest",
+        "fallbacks": ["openai-codex/gpt-5.4"]
+      },
+      "models": {
+        "ollama/qwen3-coder:latest": {
+          "alias": "local-heavy"
+        },
+        "openai-codex/gpt-5.4": {
+          "alias": "codex-reviewer"
+        }
+      },
+      "heartbeat": {
+        "every": "5m",
+        "target": "last",
+        "lightContext": false
+      }
+    }
+  },
+  "cronJobs": [
+    {
+      "name": "codex-reviewer-every-5m",
+      "schedule": {
+        "kind": "cron",
+        "expr": "*/5 * * * *",
+        "tz": "UTC"
+      },
+      "sessionTarget": "isolated",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "/skill codex-reviewer",
+        "model": "openai-codex/gpt-5.4",
+        "timeoutSeconds": 300
+      },
+      "delivery": {
+        "mode": "none"
+      }
+    }
+  ],
+  "mcpServers": {
+    "archon": {
+      "transport": "http",
+      "url": "http://archon:8080/mcp"
+    }
+  }
+}
