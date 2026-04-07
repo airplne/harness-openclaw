@@ -1,0 +1,99 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: harness-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  archon:
+    build:
+      context: ./services/archon-control-plane
+    container_name: harness-archon
+    restart: unless-stopped
+    environment:
+      ARCHON_DB_PATH: ${ARCHON_DB_PATH:-/data/archon.sqlite3}
+      ARCHON_REQUIRE_HUMAN_APPROVAL: ${ARCHON_REQUIRE_HUMAN_APPROVAL:-true}
+    volumes:
+      - archon-data:/data
+    ports:
+      - "${ARCHON_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  openclaw:
+    build:
+      context: ./services/openclaw-gateway
+    container_name: harness-openclaw
+    restart: unless-stopped
+    depends_on:
+      archon:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      OPENCLAW_WORKSPACE: ${OPENCLAW_WORKSPACE:-/workspace}
+      OPENCLAW_CONFIG_PATH: ${OPENCLAW_CONFIG_PATH:-/workspace/.openclaw/openclaw.json}
+      OPENCLAW_SKILL_RUN_CMD: ${OPENCLAW_SKILL_RUN_CMD:-python /app/mock_openclaw_runner.py --message "{message}" --model "{model}" --config "{config}"}
+      OPENCLAW_MESSAGE_PREFIX: ${OPENCLAW_MESSAGE_PREFIX:-[harness-openclaw]}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      ARCHON_API_BASE_URL: ${ARCHON_API_BASE_URL:-http://archon:8080}
+    volumes:
+      - ./:/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  review-scheduler:
+    build:
+      context: ./services/review-scheduler
+    container_name: harness-review-scheduler
+    restart: unless-stopped
+    depends_on:
+      archon:
+        condition: service_healthy
+      openclaw:
+        condition: service_healthy
+    environment:
+      REVIEW_INTERVAL_SECONDS: ${REVIEW_INTERVAL_SECONDS:-300}
+      REVIEW_CRON: ${REVIEW_CRON:-*/5 * * * *}
+      REVIEW_TIMEZONE: ${REVIEW_TIMEZONE:-UTC}
+      ARCHON_API_BASE_URL: ${ARCHON_API_BASE_URL:-http://archon:8080}
+      OPENCLAW_GATEWAY_BASE_URL: http://openclaw:8090
+      OPENCLAW_CODEX_REVIEW_MODEL: ${OPENCLAW_CODEX_REVIEW_MODEL:-openai-codex/gpt-5.4}
+      OPENCLAW_CONFIG_PATH: ${OPENCLAW_CONFIG_PATH:-/workspace/.openclaw/openclaw.json}
+      OPENCLAW_REVIEW_TIMEOUT_SECONDS: ${OPENCLAW_REVIEW_TIMEOUT_SECONDS:-300}
+      ARCHON_REVIEW_QUEUE: ${ARCHON_REVIEW_QUEUE:-codex-review}
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8079:8079"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8079/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  archon-data:
+  ollama-data:
