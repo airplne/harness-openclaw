@@ -1,22 +1,51 @@
 {
   "agents": {
     "defaults": {
+      "workspace": "/workspace",
       "model": {
         "primary": "ollama/qwen3-coder:latest",
         "fallbacks": ["openai-codex/gpt-5.4"]
-      },
-      "models": {
-        "ollama/qwen3-coder:latest": {
-          "alias": "local-heavy"
-        },
-        "openai-codex/gpt-5.4": {
-          "alias": "codex-reviewer"
-        }
       },
       "heartbeat": {
         "every": "5m",
         "target": "last",
         "lightContext": false
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "qwen3-coder:latest",
+            "name": "Qwen3 Coder",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "archon": {
+        "command": "python3",
+        "args": ["/workspace/services/archon-mcp/server.py"],
+        "env": {
+          "ARCHON_API_BASE_URL": "http://archon:8080"
+        }
       }
     }
   },
@@ -33,17 +62,11 @@
         "kind": "agentTurn",
         "message": "/skill codex-reviewer",
         "model": "openai-codex/gpt-5.4",
-        "timeoutSeconds": 300
+        "timeoutSeconds": 60
       },
       "delivery": {
         "mode": "none"
       }
     }
-  ],
-  "mcpServers": {
-    "archon": {
-      "transport": "http",
-      "url": "http://archon:8080/mcp"
-    }
-  }
+  ]
 }

@@ -2,16 +2,21 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-if [[ ! -f "${ROOT_DIR}/.env" ]]; then
-  cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
+if [[ ! -f .env ]]; then
+  cp .env.example .env
   echo "[bootstrap] copied .env.example to .env"
 fi
 
-python3 "${ROOT_DIR}/scripts/render-openclaw-config.py"
+set -a
+source .env
+set +a
 
-if [[ "${OLLAMA_PULL_MODEL:-true}" == "true" ]]; then
-  echo "[bootstrap] compose stack must be running before pulling the Ollama model"
-  echo "[bootstrap] after 'docker compose up -d', run:"
-  echo "  docker compose exec ollama ollama pull ${OLLAMA_MODEL:-qwen3-coder:latest}"
-fi
+mkdir -p .data/openclaw-config .data/archon .data/ollama
+python3 scripts/render-openclaw-config.py
+
+echo "[bootstrap] rendered OpenClaw config and local runtime directories"
+echo "[bootstrap] next steps:"
+echo "  docker compose up -d --build"
+echo "  bash scripts/onboard-openclaw.sh"

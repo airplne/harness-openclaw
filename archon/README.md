@@ -1,31 +1,47 @@
-# Archon integration
+# Archon control plane
 
-This repository ships a thin Archon-style control plane for task intake, review tracking, and human approval.
+Archon is the task and approval system for this harness.
 
-## Data model
-Tasks move through the following states:
+## Canonical task lifecycle
 
 - `queued`
 - `working`
 - `review_requested`
+- `reviewing`
 - `pending_human_approval`
 - `approved`
 - `needs_changes`
 - `rejected`
+- `failed`
 
-Approvals are stored separately so operators can see who approved, rejected, or requested changes.
+## What is persisted
 
-## Integration points
-- `POST /tasks` creates or updates tracked work items.
-- `POST /approvals` records a human gate decision.
-- `POST /reviews/run` records a scheduled Codex review attempt.
-- `/mcp` exposes a minimal MCP-compatible HTTP endpoint for OpenClaw-side tool access.
+- tasks
+- worker runs
+- review runs
+- approvals
+- task claims for worker/reviewer leasing
 
-## MCP tools exposed
-- `archon.create_task`
-- `archon.request_approval`
-- `archon.list_pending_approvals`
-- `archon.record_review`
-- `archon.transition_task`
+## Real integration surfaces
 
-Use these tools from OpenClaw when work needs to be surfaced for operator approval.
+- REST API on `:8080`
+- stdio MCP server at `services/archon-mcp/server.py`
+
+The OpenClaw config points `mcp.servers.archon` to the stdio MCP server, which is a real MCP tool surface instead of a custom `/mcp` HTTP shim.
+
+## Main endpoints
+
+- `POST /tasks`
+- `GET /tasks`
+- `PATCH /tasks/{id}`
+- `POST /tasks/{id}/transition`
+- `POST /tasks/claim`
+- `POST /tasks/{id}/release`
+- `POST /worker-runs`
+- `GET /worker-runs`
+- `POST /reviews`
+- `GET /reviews`
+- `POST /approvals`
+- `GET /approvals`
+- `POST /work/run`
+- `POST /reviews/run`

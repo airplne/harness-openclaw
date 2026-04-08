@@ -8,7 +8,7 @@ services:
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
-      - ollama-data:/root/.ollama
+      - ./.data/ollama:/root/.ollama
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -24,8 +24,10 @@ services:
     environment:
       ARCHON_DB_PATH: ${ARCHON_DB_PATH:-/data/archon.sqlite3}
       ARCHON_REQUIRE_HUMAN_APPROVAL: ${ARCHON_REQUIRE_HUMAN_APPROVAL:-true}
+      ARCHON_WORKER_API_URL: http://openclaw-gateway:8091
+      ARCHON_REVIEWER_API_URL: http://openclaw-gateway:8092
     volumes:
-      - archon-data:/data
+      - ./.data/archon:/data
     ports:
       - "${ARCHON_PORT:-8080}:8080"
     healthcheck:
@@ -35,65 +37,107 @@ services:
       retries: 10
       start_period: 10s
 
-  openclaw:
+  openclaw-gateway:
     build:
-      context: ./services/openclaw-gateway
-    container_name: harness-openclaw
+      context: ./services/openclaw-runtime
+    image: harness-openclaw-runtime:local
+    container_name: harness-openclaw-gateway
     restart: unless-stopped
     depends_on:
       archon:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
     environment:
-      OPENCLAW_WORKSPACE: ${OPENCLAW_WORKSPACE:-/workspace}
-      OPENCLAW_CONFIG_PATH: ${OPENCLAW_CONFIG_PATH:-/workspace/.openclaw/openclaw.json}
-      OPENCLAW_SKILL_RUN_CMD: ${OPENCLAW_SKILL_RUN_CMD:-python /app/mock_openclaw_runner.py --message "{message}" --model "{model}" --config "{config}"}
-      OPENCLAW_MESSAGE_PREFIX: ${OPENCLAW_MESSAGE_PREFIX:-[harness-openclaw]}
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
-      ARCHON_API_BASE_URL: ${ARCHON_API_BASE_URL:-http://archon:8080}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-change-me}
+      NODE_ENV: production
     volumes:
-      - ./:/workspace
+      - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
+    command: ["node", "dist/index.js", "gateway", "--port", "18789", "--verbose"]
     ports:
-      - "${OPENCLAW_GATEWAY_PORT:-8090}:8090"
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8090/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:18789/healthz"]
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 20s
 
-  review-scheduler:
-    build:
-      context: ./services/review-scheduler
-    container_name: harness-review-scheduler
+  openclaw-cli:
+    image: harness-openclaw-runtime:local
+    container_name: harness-openclaw-cli
+    network_mode: "service:openclaw-gateway"
+    profiles: ["manual"]
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-change-me}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
+    entrypoint: ["openclaw"]
+    command: ["status"]
+
+  openclaw-worker:
+    image: harness-openclaw-runtime:local
+    container_name: harness-openclaw-worker
+    network_mode: "service:openclaw-gateway"
     restart: unless-stopped
     depends_on:
+      openclaw-gateway:
+        condition: service_healthy
       archon:
         condition: service_healthy
-      openclaw:
-        condition: service_healthy
     environment:
-      REVIEW_INTERVAL_SECONDS: ${REVIEW_INTERVAL_SECONDS:-300}
-      REVIEW_CRON: ${REVIEW_CRON:-*/5 * * * *}
-      REVIEW_TIMEZONE: ${REVIEW_TIMEZONE:-UTC}
-      ARCHON_API_BASE_URL: ${ARCHON_API_BASE_URL:-http://archon:8080}
-      OPENCLAW_GATEWAY_BASE_URL: http://openclaw:8090
-      OPENCLAW_CODEX_REVIEW_MODEL: ${OPENCLAW_CODEX_REVIEW_MODEL:-openai-codex/gpt-5.4}
-      OPENCLAW_CONFIG_PATH: ${OPENCLAW_CONFIG_PATH:-/workspace/.openclaw/openclaw.json}
-      OPENCLAW_REVIEW_TIMEOUT_SECONDS: ${OPENCLAW_REVIEW_TIMEOUT_SECONDS:-300}
-      ARCHON_REVIEW_QUEUE: ${ARCHON_REVIEW_QUEUE:-codex-review}
+      ARCHON_API_BASE_URL: http://archon:8080
+      OPENCLAW_BIN: openclaw
+      WORKER_AGENT: archon-worker
+      OPENCLAW_WORKER_MODEL: ${OPENCLAW_WORKER_MODEL:-ollama/qwen3-coder:latest}
+      OPENCLAW_WORKER_TIMEOUT_SECONDS: 600
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-15}
+      WORKER_BACKGROUND_LOOP: "true"
     volumes:
-      - ./:/workspace
-    ports:
-      - "8079:8079"
+      - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
+    command: ["python3", "/app/worker_loop.py"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8079/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/health"]
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 20s
 
-volumes:
-  archon-data:
-  ollama-data:
+  openclaw-reviewer:
+    image: harness-openclaw-runtime:local
+    container_name: harness-openclaw-reviewer
+    network_mode: "service:openclaw-gateway"
+    restart: unless-stopped
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+      archon:
+        condition: service_healthy
+    environment:
+      ARCHON_API_BASE_URL: http://archon:8080
+      OPENCLAW_BIN: openclaw
+      REVIEW_AGENT: codex-reviewer
+      OPENCLAW_REVIEW_MODEL: ${OPENCLAW_REVIEW_MODEL:-openai-codex/gpt-5.4}
+      OPENCLAW_REVIEW_TIMEOUT_SECONDS: ${OPENCLAW_REVIEW_TIMEOUT_SECONDS:-60}
+      REVIEW_CRON: ${REVIEW_CRON:-*/5 * * * *}
+      REVIEW_TIMEZONE: ${REVIEW_TIMEZONE:-UTC}
+      REVIEW_BACKGROUND_LOOP: "true"
+      ARCHON_REVIEW_QUEUE: ${ARCHON_REVIEW_QUEUE:-codex-review}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
+    command: ["python3", "/app/review_loop.py"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8092/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s

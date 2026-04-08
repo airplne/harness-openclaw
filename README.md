@@ -1,88 +1,62 @@
-# Harness OpenClaw: Ollama worker + Codex reviewer + Archon approval plane
+# Harness OpenClaw
 
-This repository implements a hybrid OpenClaw harness with:
+This repo now wires a **real OpenClaw runtime base image**, **Ollama** as the routine worker path, **Codex** as the isolated scheduled reviewer, and **Archon** as the task / approval / operator layer.
 
-- **Ollama** as the default heavy-lift worker
-- **Codex** reserved for the scheduled `/skill codex-reviewer` quality gate
-- **Archon** as the task, approval, and operator visibility layer
-- a 5-minute automated review loop, matching the recommended hybrid pattern from the research brief
+## What is real in this repository
 
-## What is in the stack
+- `openclaw-gateway` runs from the official `ghcr.io/openclaw/openclaw:latest` image via a derived runtime image.
+- `openclaw-worker` invokes the real `openclaw` CLI with the dedicated `archon-worker` agent.
+- `openclaw-reviewer` invokes the real `openclaw` CLI with the dedicated `codex-reviewer` agent.
+- `archon` persists tasks, worker runs, reviews, approvals, and task-claim leases in SQLite.
+- `services/archon-mcp/server.py` is a real stdio MCP server, and `.openclaw/openclaw.json` points OpenClaw at it through `mcp.servers.archon`.
+- `POST /work/run` and `POST /reviews/run` are no longer stubs; they forward to the worker and reviewer services.
+- `scripts/run-smoke-test.sh` now asserts persisted worker and review records, not just health checks.
 
-- `ollama` — local model runtime for the primary worker model
-- `openclaw` — gateway container that hosts the OpenClaw workspace, config, skills, and review execution hook
-- `archon` — central control plane for task intake, task state, review history, and human approval decisions
-- `review-scheduler` — idempotent sidecar that asks Codex to run `/skill codex-reviewer` every 5 minutes
+## Architecture
 
-The OpenClaw config in `.openclaw/openclaw.json` follows the required pattern:
+- **OpenClaw** = runtime / orchestration CLI and gateway
+- **Ollama** = heavy-lift worker model for `archon-worker`
+- **Codex** = review-only model for `codex-reviewer`
+- **Archon** = tasks, reviews, approvals, and operator visibility
+- **Archon MCP** = real stdio MCP server that OpenClaw can launch from config
 
-- primary model: `ollama/qwen3-coder:latest`
-- Codex fallback/reviewer: `openai-codex/gpt-5.4`
-- heartbeat: `5m`
-- isolated cron payload calling `/skill codex-reviewer` every 5 minutes
+## Canonical task flow
 
-## One-command local setup
+1. Create a task in Archon with status `queued`.
+2. `openclaw-worker` claims the task and runs `/skill archon-worker` through the real `openclaw` CLI.
+3. Archon persists the worker run and moves the task to `review_requested`.
+4. `openclaw-reviewer` runs on `REVIEW_CRON` and invokes `/skill codex-reviewer` through the real `openclaw` CLI.
+5. Archon persists the review and moves the task to one of:
+   - `pending_human_approval`
+   - `approved`
+   - `needs_changes`
+   - `rejected`
+6. A human approval can be recorded through `POST /approvals`.
+
+## Setup
+
+### 1) Prepare local config
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
-```
-
-Optional bootstrap step:
-
-```bash
 bash scripts/bootstrap.sh
 ```
 
-Pull the local worker model into Ollama:
-
-```bash
-docker compose exec ollama ollama pull qwen3-coder:latest
-```
-
-## Important live-wire setting
-
-The harness ships with a **safe mock OpenClaw runner** so the stack can boot and the review loop can be smoke-tested immediately.
-
-To switch into a real OpenClaw runtime, edit `.env` and replace `OPENCLAW_SKILL_RUN_CMD` with your actual OpenClaw CLI invocation. The command template receives three substitutions:
-
-- `{message}`
-- `{model}`
-- `{config}`
-
-Example shape:
-
-```bash
-OPENCLAW_SKILL_RUN_CMD=openclaw agent turn --config "{config}" --model "{model}" --message "{message}"
-```
-
-Use the exact command form supported by your installed OpenClaw build.
-
-## Architecture and task flow
-
-1. A user, automation, or agent creates a task in Archon.
-2. OpenClaw routes routine work to the local Ollama primary model.
-3. When work needs review, the task remains in `working` or `review_requested`.
-4. Every 5 minutes, the isolated Codex review loop triggers `/skill codex-reviewer`.
-5. The review result is recorded back into Archon as `approved`, `needs_changes`, `rejected`, or `pending_human_approval`.
-6. A human operator can approve or reject the work through the Archon approval layer.
-
-## Exact commands
-
-Bring the stack up:
+### 2) Start the stack
 
 ```bash
 docker compose up -d --build
 ```
 
-Inspect service status:
+### 3) Complete OpenClaw onboarding and seed the worker/reviewer agents
 
 ```bash
-docker compose ps
-docker compose logs -f archon
-docker compose logs -f openclaw
-docker compose logs -f review-scheduler
+bash scripts/onboard-openclaw.sh
 ```
+
+That onboarding command runs **inside the official OpenClaw gateway image**, stores auth under `.data/openclaw-config`, creates the dedicated worker and reviewer agents, and pulls the local Ollama model.
+
+## Exact operator commands
 
 Create a task:
 
@@ -91,21 +65,34 @@ curl -X POST http://localhost:8080/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Implement repo change",
-    "description": "Have the Ollama worker make the change, then wait for Codex review.",
-    "status": "working",
+    "description": "Have the Ollama worker perform routine work, then require Codex review.",
+    "status": "queued",
     "source": "manual"
   }'
 ```
 
-List tasks and reviews:
+Run one worker cycle immediately:
+
+```bash
+curl -X POST http://localhost:8080/work/run -H "Content-Type: application/json" -d '{}'
+```
+
+Run one review cycle immediately:
+
+```bash
+curl -X POST http://localhost:8080/reviews/run -H "Content-Type: application/json" -d '{}'
+```
+
+List persisted state:
 
 ```bash
 curl http://localhost:8080/tasks | jq
+curl http://localhost:8080/worker-runs | jq
 curl http://localhost:8080/reviews | jq
 curl http://localhost:8080/approvals | jq
 ```
 
-Record a human approval:
+Approve or reject:
 
 ```bash
 curl -X POST http://localhost:8080/approvals \
@@ -114,70 +101,73 @@ curl -X POST http://localhost:8080/approvals \
     "task_id": 1,
     "decision": "approved",
     "reviewer": "operator",
-    "notes": "Looks good."
+    "notes": "Reviewed and accepted."
   }'
 ```
 
-Run the smoke test:
+## Smoke test
+
+After onboarding and model pull complete:
 
 ```bash
 ARCHON_API_BASE_URL=http://localhost:8080 \
-OPENCLAW_GATEWAY_BASE_URL=http://localhost:8090 \
+OPENCLAW_GATEWAY_HTTP_BASE_URL=http://localhost:18789 \
 OLLAMA_HTTP_BASE_URL=http://localhost:11434 \
 bash scripts/run-smoke-test.sh
 ```
 
-## Verification checklist
+This smoke test now verifies:
 
-Confirm Ollama is serving:
+- the task was created
+- a worker run was persisted
+- a review run was persisted
+- the task advanced into a post-review state
+
+## Validation checklist
+
+Gateway health:
+
+```bash
+curl http://localhost:18789/healthz
+```
+
+Archon health:
+
+```bash
+curl http://localhost:8080/health | jq
+```
+
+Ollama model list:
 
 ```bash
 curl http://localhost:11434/api/tags | jq
 ```
 
-Confirm OpenClaw is configured for a local primary model:
+Rendered OpenClaw config:
 
 ```bash
-cat .openclaw/openclaw.json | jq '.agents.defaults.model'
+cat .openclaw/openclaw.json | jq
+cat .data/openclaw-config/openclaw.json | jq
 ```
 
-Confirm the review scheduler is alive:
+## Important runtime notes
 
-```bash
-curl http://localhost:8079/health | jq
-```
+- The worker/reviewer split is enforced by **dedicated OpenClaw agents**:
+  - `archon-worker` must use `OPENCLAW_WORKER_MODEL`
+  - `codex-reviewer` must use `OPENCLAW_REVIEW_MODEL`
+- The reviewer service rejects healthy status unless the configured model name starts with `openai-codex/`.
+- The runtime no longer shells task content into `shell=True`; all `openclaw` execution uses argv-based subprocess calls.
+- The OpenClaw config and runtime files are rendered from `.env` through `scripts/render-openclaw-config.py`.
 
-Confirm Archon is receiving task and approval state:
-
-```bash
-curl http://localhost:8080/tasks | jq
-curl http://localhost:8080/approvals | jq
-curl http://localhost:8080/reviews | jq
-```
-
-## Failure modes and recovery
-
-- **Ollama has no model pulled**  
-  Pull the configured model with `docker compose exec ollama ollama pull qwen3-coder:latest`.
-
-- **Codex review loop runs but only returns mock results**  
-  Replace `OPENCLAW_SKILL_RUN_CMD` in `.env` with your real OpenClaw CLI command.
-
-- **Review loop is not moving tasks**  
-  Check `docker compose logs -f review-scheduler` and verify tasks are still in `working` or `review_requested`.
-
-- **Need a different review cadence**  
-  Edit `REVIEW_INTERVAL_SECONDS` and `REVIEW_CRON` in `.env`, then restart `review-scheduler` and `openclaw`.
-
-## Files of interest
+## Files to inspect
 
 - `docker-compose.yml`
 - `.env.example`
 - `.openclaw/openclaw.json`
+- `services/archon-control-plane/app.py`
+- `services/archon-mcp/server.py`
+- `services/openclaw-runtime/Dockerfile`
+- `services/openclaw-runtime/worker_loop.py`
+- `services/openclaw-runtime/review_loop.py`
+- `skills/archon-worker/SKILL.md`
 - `skills/codex-reviewer/SKILL.md`
-- `services/archon-control-plane/`
-- `services/openclaw-gateway/`
-- `services/review-scheduler/`
-- `scripts/bootstrap.sh`
-- `scripts/render-openclaw-config.py`
-- `scripts/run-smoke-test.sh`

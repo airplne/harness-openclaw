@@ -1,1 +1,0 @@
-# Harness OpenClaw Test File

@@ -1,10 +1,10 @@
 .env
 .env.local
+.data/
 __pycache__/
 *.pyc
 *.pyo
 *.sqlite3
 *.db
-data/
-logs/
+.pytest_cache/
 .venv/
