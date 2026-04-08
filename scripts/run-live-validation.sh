@@ -14,9 +14,13 @@ mkdir -p "$OUT_DIR"
 
 echo "[validate] collecting health"
 curl -fsS "http://localhost:${ARCHON_PORT:-8080}/health" | python3 -m json.tool > "$OUT_DIR/archon-health.json"
-docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/health | python3 -m json.tool > "$OUT_DIR/worker-health.json"
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/health | python3 -m json.tool > "$OUT_DIR/worker-healt.json"
 docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/health | python3 -m json.tool > "$OUT_DIR/reviewer-health.json"
-docker compose run --rm openclaw-cli gateway health --url ws://127.0.0.1:18789 --json > "$OUT_DIR/gateway-health.json"
+docker compose run --rm openclaw-cli gateway health --url ws://127.0.0.1:18789 --json > "$OUT_DIR/gateway-healt.json"
+
+echo "[validate] verifying renderer scrub behavior"
+python3 scripts/render-openclaw-config.py --self-test > "$OUT_DIR/render-self-test.json"
+python3 scripts/render-openclaw-config.py --verify-file .openclaw/openclaw.json --verify-file .data/openclaw-config/openclaw.json > "$OUT_DIR/rendered-config-check.json"
 
 echo "[validate] checking for deprecated auth env leakage"
 docker compose run --rm --entrypoint /usr/bin/env openclaw-cli | grep -E '^(OLLAMA_API_KEY|OPENAI_API_KEY|OPENCLAW_GATEWAY_TOKEN)=' > "$OUT_DIR/deprecated-auth-env.txt" || true
@@ -32,6 +36,7 @@ import json
 from pathlib import Path
 
 state_dir = Path("/home/node/.openclaw")
+provider = "openai-codex"
 profiles = []
 for path in state_dir.rglob("auth-profiles.json"):
     try:
@@ -50,17 +55,55 @@ for path in state_dir.rglob("auth-profiles.json"):
                     "type": credential.get("type"),
                 }
             )
-manual = [item for item in profiles if item.get("type") in {"api_key", "token"}]
-oauth = [item for item in profiles if item.get("type") == "oauth"]
-print(json.dumps({"profiles": profiles, "manual": manual, "oauth": oauth}, indent=2))
-if manual:
-    raise SystemExit("manual credentials remain in auth profiles")
-if not any(item.get("provider") == "openai-codex" for item in oauth):
+
+governed = [item for item in profiles if item.get("provider") == provider]
+governed_manual = [item for item in governed if item.get("type") in {"api_key", "token"}]
+governed_oauth = [item for item in governed if item.get("type") == "oauth"]
+other_manual = [item for item in profiles if item.get("provider") != provider and item.get("type") in {"api_key", "token"}]
+
+print(json.dumps({
+    "profiles": profiles,
+    "governed_provider": provider,
+    "governed_manual": governed_manual,
+    "governed_oauth": governed_oauth,
+    "other_manual": other_manual,
+}, indent=2))
+if governed_manual:
+    raise SystemExit("manual credentials remain for governed provider openai-codex")
+if not governed_oauth:
     raise SystemExit("missing openai-codex OAuth profile")
 PY2
 
 echo "[validate] capturing agent inventory"
 docker compose run --rm openclaw-cli agents list --json > "$OUT_DIR/agents.json"
+python3 - <<'PY2' "$OUT_DIR/agents.json" "$OPENCLAW_WORKER_MODEL" "$OPENCLAW_REVIEW_MODEL" > "$OUT_DIR/agent-bindings.json"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+worker_model = sys.argv[2]
+review_model = sys.argv[3]
+items = payload.get("items") if isinstance(payload, dict) else payload
+if not isinstance(items, list):
+    raise SystemExit("unexpected agents list payload")
+
+def find_agent(agent_id: str):
+    for item in items:
+        if item.get("id") == agent_id:
+            return item
+    return None
+
+worker = find_agent("archon-worker")
+reviewer = find_agent("codex-reviewer")
+if worker is None or reviewer is None:
+    raise SystemExit("expected worker/reviewer agents missing from inventory")
+if worker.get("model") != worker_model:
+    raise SystemExit(f"archon-worker model drift: {worker.get('model')} != {worker_model}")
+if reviewer.get("model") != review_model:
+    raise SystemExit(f"codex-reviewer model drift: {reviewer.get('model')} != {review_model}")
+print(json.dumps({"worker": worker, "reviewer": reviewer}, indent=2))
+PY2
 
 echo "[validate] running smoke test"
 bash scripts/run-smoke-test.sh | tee "$OUT_DIR/smoke-test.log"

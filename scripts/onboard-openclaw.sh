@@ -9,6 +9,7 @@ source .env
 set +a
 
 python3 scripts/render-openclaw-config.py
+python3 scripts/render-openclaw-config.py --verify-file .openclaw/openclaw.json --verify-file .data/openclaw-config/openclaw.json
 
 echo "[onboard] running OpenClaw onboarding for Codex OAuth"
 docker compose run --rm openclaw-cli onboard --mode local --auth-choice openai-codex --accept-risk
@@ -25,6 +26,7 @@ docker compose exec ollama ollama pull "${OLLAMA_MODEL}"
 
 echo "[onboard] rendering config after onboarding"
 python3 scripts/render-openclaw-config.py
+python3 scripts/render-openclaw-config.py --verify-file .openclaw/openclaw.json --verify-file .data/openclaw-config/openclaw.json
 
 echo "[onboard] verifying dedicated agents"
 docker compose run --rm openclaw-cli agents add archon-worker --workspace /workspace --model "${OPENCLAW_WORKER_MODEL}" --non-interactive --json
@@ -62,12 +64,13 @@ if reviewer.get("model") != review_model:
 print(json.dumps({"worker": worker, "reviewer": reviewer}, indent=2))
 PY2
 
-echo "[onboard] verifying auth profile types"
+echo "[onboard] verifying governed auth profile types"
 docker compose run --rm --entrypoint python3 openclaw-cli - <<'PY2'
 import json
 from pathlib import Path
 
 state_dir = Path("/home/node/.openclaw")
+provider = "openai-codex"
 profiles = []
 for path in state_dir.rglob("auth-profiles.json"):
     try:
@@ -81,22 +84,27 @@ for path in state_dir.rglob("auth-profiles.json"):
             profiles.append(
                 {
                     "path": str(path),
-                    "profile_id": profile_id,
+                    "profile_id": str(profile_id),
                     "provider": credential.get("provider"),
                     "type": credential.get("type"),
                 }
             )
 
-manual = [item for item in profiles if item.get("type") in {"api_key", "token"}]
-oauth = [item for item in profiles if item.get("type") == "oauth"]
-codex_oauth = [item for item in oauth if item.get("provider") == "openai-codex"]
+governed = [item for item in profiles if item.get("provider") == provider]
+governed_manual = [item for item in governed if item.get("type") in {"api_key", "token"}]
+governed_oauth = [item for item in governed if item.get("type") == "oauth"]
+other_manual = [item for item in profiles if item.get("provider") != provider and item.get("type") in {"api_key", "token"}]
 
-if manual:
-    raise SystemExit("manual non-OAuth provider credentials remain in auth profiles: " + json.dumps(manual))
-if not codex_oauth:
+if governed_manual:
+    raise SystemExit("manual credentials remain for governed provider openai-codex: " + json.dumps(governed_manual))
+if not governed_oauth:
     raise SystemExit("missing openai-codex OAuth auth profile after onboarding")
 
-print(json.dumps({"oauth_profiles": oauth}, indent=2))
+print(json.dumps({
+    "governed_provider": provider,
+    "governed_oauth_profiles": governed_oauth,
+    "other_manual_profiles": other_manual,
+}, indent=2))
 PY2
 
 echo "[onboard] complete"

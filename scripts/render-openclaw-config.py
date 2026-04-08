@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
+
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
+CONTROLLED_TOP_LEVEL_KEYS = {"agents", "models", "mcp", "cronJobs"}
+FORBIDDEN_PATHS: tuple[tuple[str, ...], ...] = (
+    ("agents", "defaults", "model", "fallbacks"),
+    ("models", "providers", "ollama", "apiKey"),
+})
 
 
 def load_env(path: Path) -> None:
@@ -20,19 +28,7 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def deep_merge(base: object, patch: object) -> object:
-    if isinstance(base, dict) and isinstance(patch, dict):
-        result = dict(base)
-        for key, value in patch.items():
-            if key in result:
-                result[key] = deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-    return patch
-
-
-def load_json_if_exists(path: Path) -> dict:
+def load_json_if_exists(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
@@ -42,79 +38,172 @@ def load_json_if_exists(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-load_env(ENV_PATH)
+def has_path(payload: dict[str, Any], path: tuple[str, ...]) -> bool:
+    cursor: Any = payload
+    for key in path:
+        if not isinstance(cursor, dict) or key not in cursor:
+            return False
+        cursor = cursor[key]
+    return True
 
-worker_model = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest")
-review_model = os.getenv("OPENCLAW_REVIEW_MODEL", "openai-codex/gpt-5.4")
-review_cron = os.getenv("REVIEW_CRON", "*/5 * * * *")
-review_timezone = os.getenv("REVIEW_TIMEZONE", "UTC")
-ollama_model = os.getenv("OLLAMA_MODEL", worker_model.split("/", 1)[1] if "/" in worker_model else worker_model)
-ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-config_dir = Path(os.getenv("OPENCLAW_CONFIG_DIR", str(ROOT / ".data" / "openclaw-config")))
-review_timeout = int(os.getenv("OPENCLAW_REVIEW_TIMEOUT_SECONDS", "60"))
 
-base = {
-    "agents": {
-        "defaults": {
-            "workspace": "/workspace",
-            "model": {"primary": worker_model},
-            "heartbeat": {"every": "5m", "target": "last", "lightContext": False},
-        }
-    },
-    "models": {
-        "providers": {
-            "ollama": {
-                "baseUrl": ollama_base_url,
-                "api": "ollama",
-                "models": [
-                    {
-                        "id": ollama_model,
-                        "name": ollama_model,
-                        "reasoning": False,
-                        "input": ["text"],
-                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                        "contextWindow": 32768,
-                        "maxTokens": 32768,
-                    }
-                ],
+def assert_forbidden_paths_absent(payload: dict[str, Any]) -> None:
+    found = [".".join(path) for path in FORBIDDEN_PATHS if has_path(payload, path)]
+    if found:
+        raise SystemExit("forbidden config keys present after render: " + ", ".join(found))
+
+
+def collect_passthrough(existing_configs: list[dict[str, Any]]) -> dict[str, Any]:
+    passthrough: dict[str, Any] = {}
+    for item in existing_configs:
+        for key, value in item.items():
+            if key not in CONTROLLED_TOP_LEVEL_KEYS:
+                passthrough[key] = value
+    return passthrough
+
+
+def build_base_config(*, worker_model: str, review_model: str, review_cron: str, review_timezone: str, ollama_model: str, ollama_base_url: str, review_timeout: int) -> dict[str, Any]:
+    return {
+        "agents": {
+            "defaults": {
+                "workspace": "/workspace",
+                "model": {"primary": worker_model},
+                "heartbeat": {"every": "5m", "target": "last", "lightContext": False},
             }
-        }
-    },
-    "mcp": {
-        "servers": {
-            "archon": {
-                "command": "python3",
-                "args": ["/workspace/services/archon-mcp/server.py"],
-                "env": {"ARCHON_API_BASE_URL": "http://archon:8080"},
+        },
+        "models": {
+            "providers": {
+                "ollama": {
+                    "baseUrl": ollama_base_url,
+                    "api": "ollama",
+                    "models": [
+                        {
+                            "id": ollama_model,
+                            "name": ollama_model,
+                            "reasoning": False,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                            "contextWindow": 32768,
+                            "maxTokens": 32768,
+                        }
+                    ],
+                }
             }
-        }
-    },
-    "cronJobs": [
-        {
-            "name": "codex-reviewer-every-5m",
-            "schedule": {"kind": "cron", "expr": review_cron, "tz": review_timezone},
-            "sessionTarget": "isolated",
-            "payload": {
-                "kind": "agentTurn",
-                "message": "/skill codex-reviewer",
-                "model": review_model,
-                "timeoutSeconds": review_timeout,
-            },
-            "delivery": {"mode": "none"},
-        }
-    ],
-}
+        },
+        "mcp": {
+            "servers": {
+                "archon": {
+                    "command": "python3",
+                    "args": ["/workspace/services/archon-mcp/server.py"],
+                    "env": {"ARCHON_API_BASE_URL": "http://archon:8080"},
+                }
+            }
+        },
+        "cronJobs": [
+            {
+                "name": "codex-reviewer-every-5m",
+                "schedule": {"kind": "cron", "expr": review_cron, "tz": review_timezone},
+                "sessionTarget": "isolated",
+                "payload": {
+                    "kind": "agentTurn",
+                    "message": "/skill codex-reviewer",
+                    "model": review_model,
+                    "timeoutSeconds": review_timeout,
+                },
+                "delivery": {"mode": "none"},
+            }
+        ],
+    }
 
-repo_config_path = ROOT / ".openclaw" / "openclaw.json"
-repo_existing = load_json_if_exists(repo_config_path)
-runtime_existing = load_json_if_exists(config_dir / "openclaw.json")
-existing = deep_merge(runtime_existing, repo_existing)
-config = deep_merge(existing, base)
 
-repo_config_path.parent.mkdir(parents=True, exist_ok=True)
-repo_config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-config_dir.mkdir(parents=True, exist_ok=True)
-(config_dir / "openclaw.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+def build_config(repo_existing: dict[str, Any], runtime_existing: dict[str, Any]) -> dict[str, Any]:
+    worker_model = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest")
+    review_model = os.getenv("OPENCLAW_REVIEW_MODEL", "openai-codex/gpt-5.4")
+    review_cron = os.getenv("REVIEW_CRON", "*/5 * * * *")
+    review_timezone = os.getenv("REVIEW_TIMEZONE", "UTC")
+    ollama_model = os.getenv("OLLAMA_MODEL", worker_model.split("/", 1)[1] if "/" in worker_model else worker_model)
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    review_timeout = int(os.getenv("OPENCLAW_REVIEW_TIMEOUT_SECONDS", "60"))
 
-print(f"rendered {repo_config_path}")
-print(f"rendered {config_dir / 'openclaw.json'}")
+    config = collect_passthrough([runtime_existing, repo_existing])
+    config.update(
+        build_base_config(
+            worker_model=worker_model,
+            review_model=review_model,
+            review_cron=review_cron,
+            review_timezone=review_timezone,
+            ollama_model=ollama_model,
+            ollama_base_url=ollama_base_url,
+            review_timeout=review_timeout,
+        )
+    )
+    assert_forbidden_paths_absent(config)
+    return config
+
+
+def verify_files(paths: list[Path]) -> list[dict[str, Any]]:
+    results = []
+    for path in paths:
+        payload = load_json_if_exists(path)
+        assert_forbidden_paths_absent(payload)
+        results.append({"path": str(path), "ok": True, "forbidden_paths_checked": [".".join(item) for item in FORBIDDEN_PATHS]})
+    return results
+
+
+def run_self_test() -> dict[str, Any]:
+    stale = {
+        "agents": {"defaults": {"model": {"primary": "ollama/old-model", "fallbacks": ["openai-codex/gpt-5.4"]}}},
+        "models": {"providers": {"ollama": {"baseUrl": "http://old-ollama:11434", "apiKey": "ollama-local"}}},
+        "mcp": {"servers": {"archon": {"command": "python3", "args": ["/tmp/old.py"]}}},
+        "cronJobs": [{"name": "old-job"}],
+        "ui": {"theme": "dark"},
+    }
+    config = build_config(stale, stale)
+    if config.get("ui") != {"theme": "dark"}:
+        raise SystemExit("self-test failed to preserve non-controlled top-level keys")
+    if config["agents"]["defaults"]["model"]["primary"] != os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest"):
+        raise SystemExit("self-test failed to rebuild worker model config")
+    assert_forbidden_paths_absent(config)
+    return {
+        "ok": True,
+        "preserved_top_level_keys": sorted([key for key in config.keys() if key not in CONTROLLED_TOP_LEVEL_KEYS]),
+        "forbidden_paths_checked": [".".join(item) for item in FORBIDDEN_PATHS],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Render canonical OpenClaw harness config.")
+    parser.add_argument("--self-test", action="store_true", help="Run a synthetic stale-config scrub test and exit.")
+    parser.add_argument("--verify-file", action="append", default=[], help="Verify that an existing config file is scrubbed of deprecated keys.")
+    args = parser.parse_args()
+
+    load_env(ENV_PATH)
+
+    if args.self_test:
+        print(json.dumps(run_self_test(), indent=2))
+        return 0
+
+    if args.verify_file:
+        paths = [Path(item) for item in args.verify_file]
+        print(json.dumps({"results": verify_files(paths)}, indent=2))
+        return 0
+
+    config_dir = Path(os.getenv("OPENCLAW_CONFIG_DIR", str(ROOT / ".data" / "openclaw-config")))
+    repo_config_path = ROOT / ".openclaw" / "openclaw.json"
+    repo_existing = load_json_if_exists(repo_config_path)
+    runtime_existing = load_json_if_exists(config_dir / "openclaw.json")
+    config = build_config(repo_existing, runtime_existing)
+
+    repo_config_path.parent.mkdir(parents=True, exist_ok=True)
+    repo_config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    print(f"rendered {repo_config_path}")
+    print(f"rendered {config_dir / 'openclaw.json}")
+    print(json.dumps({"verified_forbidden_paths": [".".join(item) for item in FORBIDDEN_PATHS]}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

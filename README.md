@@ -15,8 +15,9 @@ Provider auth now follows the OpenClaw auth-profile pattern:
 
 - Auth state lives under `.data/openclaw-config/**/auth-profiles.json`
 - Codex reviewer access is provisioned through **OpenAI Codex OAuth**
-- The harness refuses startup validation when manual `api_key` or `token` auth profiles are present
-- Local Ollama usage does not require a credential; when operators choose an authenticated Ollama cloud/local setup, it must be established through OpenClaw onboarding rather than shell env injection
+- The harness rejects manual `api_key` or `token` auth profiles for the governed reviewer provider `openai-codex`
+- Unrelated OpenClaw auth profiles can coexist; the harness validates only the providers it governs
+- Local Ollama usage does not require a credential; when operators choose an authenticated Ollama setup, it must be established through OpenClaw onboarding rather than shell env injection
 
 The compose stack also no longer injects provider credentials into container environments.
 
@@ -29,7 +30,7 @@ The compose stack also no longer injects provider credentials into container env
 - `services/archon-mcp/server.py` is a real stdio MCP server, and `.openclaw/openclaw.json` points OpenClaw at it through `mcp.servers.archon`.
 - `POST /work/run` and `POST /reviews/run` are real forwarding endpoints.
 - `scripts/run-smoke-test.sh` asserts persisted worker and review records plus post-review task state.
-- `scripts/run-live-validation.sh` captures live verification artifacts for operator review.
+- `scripts/run-live-validation.sh` captures live verification artifacts for operator review, including renderer scrub checks and exact agent binding verification.
 
 ## Architecture
 
@@ -80,7 +81,8 @@ That onboarding flow:
 - provisions Codex auth through OpenClaw OAuth
 - configures Ollama through OpenClaw onboarding rather than shell credentials
 - verifies the dedicated worker and reviewer agents exist with the expected model bindings
-- fails if non-OAuth manual provider credentials remain in auth profiles
+- verifies rendered config is scrubbed of deprecated fallback and fake-auth keys
+- fails if manual non-OAuth credentials remain for the governed reviewer provider `openai-codex`
 
 ## Exact operator commands
 
@@ -157,9 +159,10 @@ bash scripts/run-live-validation.sh
 That script collects:
 
 - Archon, worker, reviewer, and gateway health
-- agent inventory and model bindings
-- auth-profile summaries
+- exact agent inventory and model bindings
+- governed auth-profile summaries for `openai-codex`
 - environment leak checks for deprecated auth vars
+- renderer scrub self-test plus verification of the current rendered config files
 - smoke-test results
 - persisted `tasks`, `worker-runs`, `reviews`, and `approvals`
 
@@ -176,13 +179,13 @@ curl http://localhost:8080/health | jq
 Worker health:
 
 ```bash
-curl http://localhost:8091/health | jq
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/health | jq
 ```
 
 Reviewer health:
 
 ```bash
-curl http://localhost:8092/health | jq
+docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/health | jq
 ```
 
 Gateway health through the CLI container:
@@ -204,6 +207,12 @@ cat .openclaw/openclaw.json | jq
 cat .data/openclaw-config/openclaw.json | jq
 ```
 
+Renderer scrub self-test:
+
+```bash
+python3 scripts/render-openclaw-config.py --self-test | jq
+```
+
 ## Important runtime notes
 
 - The worker/reviewer split is enforced by **dedicated OpenClaw agents** and by runtime validation of the bound model for each agent.
@@ -211,13 +220,16 @@ cat .data/openclaw-config/openclaw.json | jq
   - the configured model exactly matches `OPENCLAW_REVIEW_MODEL`
   - the model starts with `openai-codex/`
   - an OAuth auth profile exists for `openai-codex`
+  - no manual `api_key` or `token` credentials remain for the governed reviewer provider `openai-codex`
+- Unrelated auth profiles can coexist; the harness does not globally ban every manual profile under `.openclaw`.
 - The runtime no longer shells task content into `shell=True`; all `openclaw` execution uses argv-based subprocess calls.
-- The OpenClaw config renderer preserves provider auth state instead of re-writing credentials into config or env files.
+- The OpenClaw config renderer rebuilds the controlled sections (`agents`, `models`, `mcp`, `cronJobs`) canonically and verifies that deprecated keys such as `agents.defaults.model.fallbacks` and `models.providers.ollama.apiKey` are absent after rendering.
 - Review command failures now persist a first-class `failed` review result instead of silently downgrading into `pending_human_approval`.
+- The gateway runs loopback-only inside the shared runtime namespace, so worker/reviewer health checks are container-local rather than host-published.
 
 ## What still requires operator-run validation
 
-This repository now encodes the OAuth-only runtime shape and fail-fast validation logic, but two things still require an operator to run them in a real environment:
+This repository now encodes the OAuth-based runtime shape and fail-fast validation logic, but two things still require an operator to run them in a real environment:
 
 1. pulling and starting the official OpenClaw image through Docker
 2. completing the live browser-based Codex OAuth flow
@@ -236,6 +248,7 @@ Those steps are exactly what `scripts/onboard-openclaw.sh` and `scripts/run-live
 - `services/openclaw-runtime/worker_loop.py`
 - `services/openclaw-runtime/review_loop.py`
 - `scripts/onboard-openclaw.sh`
+- `scripts/render-openclaw-config.py`
 - `scripts/run-live-validation.sh`
 - `skills/archon-worker/SKILL.md`
 - `skills/codex-reviewer/SKILL.md`

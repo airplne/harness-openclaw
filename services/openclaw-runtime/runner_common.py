@@ -118,7 +118,7 @@ def resolve_agent_model(agent_id: str) -> str | None:
     return None
 
 
-def inspect_auth_profiles() -> dict[str, Any]:
+def inspect_auth_profiles(provider_filter: set[str] | None = None) -> dict[str, Any]:
     profiles: list[dict[str, Any]] = []
     if OPENCLAW_STATE_DIR.exists():
         for path in OPENCLAW_STATE_DIR.rglob("auth-profiles.json"):
@@ -138,46 +138,96 @@ def inspect_auth_profiles() -> dict[str, Any]:
                             "type": credential.get("type"),
                         }
                     )
-    manual = [item for item in profiles if item.get("type") in {"api_key", "token"}]
-    oauth = [item for item in profiles if item.get("type") == "oauth"]
+    scoped_providers = sorted(provider_filter or set())
+    if provider_filter:
+        scoped_profiles = [item for item in profiles if item.get("provider") in provider_filter]
+        other_profiles = [item for item in profiles if item.get("provider") not in provider_filter]
+    else:
+        scoped_profiles = profiles
+        other_profiles = []
+    manual = [item for item in scoped_profiles if item.get("type") in {"api_key", "token"}]
+    oauth = [item for item in scoped_profiles if item.get("type") == "oauth"]
     return {
         "profiles": profiles,
+        "scoped_providers": scoped_providers,
+        "scoped_profiles": scoped_profiles,
+        "other_profiles": other_profiles,
         "manual_credentials": manual,
         "oauth_profiles": oauth,
         "oauth_providers": sorted({str(item.get("provider")) for item in oauth if item.get("provider")}),
     }
 
 
-def assert_runtime_ready(*, agent_id: str, expected_model: str, required_oauth_provider: str | None = None) -> dict[str, Any]:
-    auth_state = inspect_auth_profiles()
+def assert_runtime_ready(
+    *,
+    agent_id: str,
+    expected_model: str,
+    auth_providers_to_validate: set[str] | None = None,
+    required_oauth_provider: str | None = None,
+) -> dict[str, Any]:
     actual_model = resolve_agent_model(agent_id)
     if actual_model != expected_model:
         raise RuntimeError(f"{agent_id} model drift: {actual_model!r} != {expected_model!r}")
-    manual = auth_state["manual_credentials"]
-    if manual:
-        raise RuntimeError("manual provider credentials remain in auth profiles")
-    if required_oauth_provider and required_oauth_provider not in auth_state["oauth_providers"]:
-        raise RuntimeError(f"missing OAuth profile for {required_oauth_provider}")
-    return {"agent_id": agent_id, "model": actual_model, "auth_state": auth_state}
+
+    governed_providers = set(auth_providers_to_validate or set())
+    if required_oauth_provider:
+        governed_providers.add(required_oauth_provider)
+
+    result: dict[str, Any] = {
+        "agent_id": agent_id,
+        "model": actual_model,
+        "auth_policy": {
+            "mode": "provider_scoped" if governed_providers else "model_only",
+            "providers": sorted(governed_providers),
+            "required_oauth_provider": required_oauth_provider,
+        },
+    }
+
+    if governed_providers:
+        auth_state = inspect_auth_profiles(governed_providers)
+        if auth_state["manual_credentials"]:
+            raise RuntimeError(
+                "manual provider credentials remain for governed providers: "
+                + ", ".join(sorted(governed_providers))
+            )
+        if required_oauth_provider and required_oauth_provider not in auth_state["oauth_providers"]:
+            raise RuntimeError(f"missing OAuth profile for {required_oauth_provider}")
+        result["auth_state"] = auth_state
+
+    return result
 
 
-def build_runtime_diagnostics(*, agent_id: str, expected_model: str, required_oauth_provider: str | None = None) -> dict[str, Any]:
+def build_runtime_diagnostics(
+    *,
+    agent_id: str,
+    expected_model: str,
+    auth_providers_to_validate: set[str] | None = None,
+    required_oauth_provider: str | None = None,
+) -> dict[str, Any]:
     try:
         state = assert_runtime_ready(
             agent_id=agent_id,
             expected_model=expected_model,
+            auth_providers_to_validate=auth_providers_to_validate,
             required_oauth_provider=required_oauth_provider,
         )
         return {"ok": True, **state}
     except Exception as exc:
-        return {
+        diagnostics = {
             "ok": False,
             "agent_id": agent_id,
             "expected_model": expected_model,
             "error": str(exc),
-            "auth_state": inspect_auth_profiles(),
             "actual_model": resolve_agent_model(agent_id),
+            "auth_policy": {
+                "mode": "provider_scoped" if (auth_providers_to_validate or required_oauth_provider) else "model_only",
+                "providers": sorted(set(auth_providers_to_validate or set()) | ({required_oauth_provider} if required_oauth_provider else set())),
+                "required_oauth_provider": required_oauth_provider,
+            },
         }
+        if auth_providers_to_validate or required_oauth_provider:
+            diagnostics["auth_state"] = inspect_auth_profiles(set(auth_providers_to_validate or set()) | ({required_oauth_provider} if required_oauth_provider else set()))
+        return diagnostics
 
 
 def _latest_worker_run(task_id: int) -> dict[str, Any] | None:
