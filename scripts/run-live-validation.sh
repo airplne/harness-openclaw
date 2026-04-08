@@ -115,6 +115,7 @@ bash scripts/run-smoke-test.sh | tee "$OUT_DIR/smoke-test.log"
 
 echo "[validate] capturing persisted state"
 curl -fsS "http://localhost:${ARCHON_PORT:-8080}/tasks" | python3 -m json.tool > "$OUT_DIR/tasks.json"
+curl -fsS "http://localhost:${ARCHON_PORT:-8080}/claims" | python3 -m json.tool > "$OUT_DIR/claims.json"
 curl -fsS "http://localhost:${ARCHON_PORT:-8080}/worker-runs" | python3 -m json.tool > "$OUT_DIR/worker-runs.json"
 curl -fsS "http://localhost:${ARCHON_PORT:-8080}/reviews" | python3 -m json.tool > "$OUT_DIR/reviews.json"
 curl -fsS "http://localhost:${ARCHON_PORT:-8080}/approvals" | python3 -m json.tool > "$OUT_DIR/approvals.json"

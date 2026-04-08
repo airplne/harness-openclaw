@@ -41,12 +41,14 @@ The compose stack also no longer injects provider credentials into container env
 - **Archon** = tasks, reviews, approvals, and operator visibility
 - **Archon MCP** = real stdio MCP server launched from OpenClaw config
 
+The only authoritative review scheduler is the `openclaw-reviewer` service running `services/openclaw-runtime/review_loop.py`. The OpenClaw config does not schedule independent review turns.
+
 ## Canonical task flow
 
 1. Create a task in Archon with status `queued`.
 2. `openclaw-worker` claims the task and runs `/skill archon-worker` through the real `openclaw` CLI.
 3. Archon persists the worker run and moves the task to `review_requested`.
-4. `openclaw-reviewer` runs on `REVIEW_CRON` and invokes `/skill codex-reviewer` through the real `openclaw` CLI.
+4. `openclaw-reviewer` runs on `REVIEW_CRON`, claims `review_requested` tasks through Archon, and invokes `/skill codex-reviewer` through the real `openclaw` CLI.
 5. Archon persists the review and moves the task to one of:
    - `pending_human_approval`
    - `approved`
@@ -166,7 +168,7 @@ That script collects:
 - environment leak checks for deprecated auth vars
 - renderer scrub self-test plus verification of the current rendered config files
 - smoke-test results
-- persisted `tasks`, `worker-runs`, `reviews`, and `approvals`
+- persisted `tasks`, `claims`, `worker-runs`, `reviews`, and `approvals`
 
 Artifacts are written under `.data/validation/latest`.
 
@@ -218,6 +220,7 @@ python3 scripts/render-openclaw-config.py --self-test | jq
 ## Important runtime notes
 
 - The worker/reviewer split is enforced by **dedicated OpenClaw agents** and by runtime validation of the bound model for each agent.
+- The only active review scheduler is `openclaw-reviewer` using `services/openclaw-runtime/review_loop.py`; `REVIEW_CRON` configures that service cadence and the OpenClaw config intentionally does not emit independent `cronJobs`.
 - The reviewer service rejects healthy status unless:
   - the configured model exactly matches `OPENCLAW_REVIEW_MODEL`
   - the model starts with `openai-codex/`
@@ -225,7 +228,7 @@ python3 scripts/render-openclaw-config.py --self-test | jq
   - no manual `api_key` or `token` credentials remain for the governed reviewer provider `openai-codex`
 - Unrelated auth profiles can coexist; the harness does not globally ban every manual profile under `.openclaw`.
 - The runtime no longer shells task content into `shell=True`; all `openclaw` execution uses argv-based subprocess calls.
-- The OpenClaw config renderer rebuilds the controlled sections (`agents`, `models`, `mcp`, `cronJobs`) canonically and verifies that deprecated keys such as `agents.defaults.model.fallbacks` and `models.providers.ollama.apiKey` are absent after rendering.
+- The OpenClaw config renderer rebuilds the controlled sections (`agents`, `models`, `mcp`) canonically, strips any legacy `cronJobs` block, and verifies that deprecated keys such as `agents.defaults.model.fallbacks` and `models.providers.ollama.apiKey` are absent after rendering.
 - Review command failures now persist a first-class `failed` review result instead of silently downgrading into `pending_human_approval`.
 - The gateway runs loopback-only inside the shared runtime namespace, so worker/reviewer health checks are container-local rather than host-published.
 - `openclaw-gateway`, `openclaw-worker`, `openclaw-reviewer`, and `openclaw-cli` share the same logical runtime network surface; Archon and Ollama stay on the named Compose network `harness-openclaw`.

@@ -45,6 +45,7 @@ services:
       args:
         OPENCLAW_IMAGE: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     image: harness-openclaw-runtime:local
+    pull_policy: never
     container_name: harness-openclaw-gateway
     restart: unless-stopped
     depends_on:
@@ -70,6 +71,7 @@ services:
 
   openclaw-cli:
     image: harness-openclaw-runtime:local
+    pull_policy: never
     container_name: harness-openclaw-cli
     network_mode: "service:openclaw-gateway"
     profiles: ["manual"]
@@ -84,6 +86,7 @@ services:
 
   openclaw-worker:
     image: harness-openclaw-runtime:local
+    pull_policy: never
     container_name: harness-openclaw-worker
     network_mode: "service:openclaw-gateway"
     restart: unless-stopped
@@ -115,6 +118,7 @@ services:
 
   openclaw-reviewer:
     image: harness-openclaw-runtime:local
+    pull_policy: never
     container_name: harness-openclaw-reviewer
     network_mode: "service:openclaw-gateway"
     restart: unless-stopped

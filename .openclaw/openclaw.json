@@ -50,25 +50,5 @@
         }
       }
     }
-  },
-  "cronJobs": [
-    {
-      "name": "codex-reviewer-every-5m",
-      "schedule": {
-        "kind": "cron",
-        "expr": "*/5 * * * *",
-        "tz": "UTC"
-      },
-      "sessionTarget": "isolated",
-      "payload": {
-        "kind": "agentTurn",
-        "message": "/skill codex-reviewer",
-        "model": "openai-codex/gpt-5.4",
-        "timeoutSeconds": 60
-      },
-      "delivery": {
-        "mode": "none"
-      }
-    }
-  ]
+  }
 }

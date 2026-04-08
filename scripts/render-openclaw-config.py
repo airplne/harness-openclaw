@@ -84,12 +84,8 @@ def collect_passthrough(existing_configs: list[dict[str, Any]]) -> dict[str, Any
 def build_base_config(
     *,
     worker_model: str,
-    review_model: str,
-    review_cron: str,
-    review_timezone: str,
     ollama_model: str,
     ollama_base_url: str,
-    review_timeout: int,
 ) -> dict[str, Any]:
     return {
         "agents": {
@@ -127,42 +123,20 @@ def build_base_config(
                 }
             }
         },
-        "cronJobs": [
-            {
-                "name": "codex-reviewer-every-5m",
-                "schedule": {"kind": "cron", "expr": review_cron, "tz": review_timezone},
-                "sessionTarget": "isolated",
-                "payload": {
-                    "kind": "agentTurn",
-                    "message": "/skill codex-reviewer",
-                    "model": review_model,
-                    "timeoutSeconds": review_timeout,
-                },
-                "delivery": {"mode": "none"},
-            }
-        ],
     }
 
 
 def build_config(repo_existing: dict[str, Any], runtime_existing: dict[str, Any]) -> dict[str, Any]:
     worker_model = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest")
-    review_model = os.getenv("OPENCLAW_REVIEW_MODEL", "openai-codex/gpt-5.4")
-    review_cron = os.getenv("REVIEW_CRON", "*/5 * * * *")
-    review_timezone = os.getenv("REVIEW_TIMEZONE", "UTC")
     ollama_model = os.getenv("OLLAMA_MODEL", worker_model.split("/", 1)[1] if "/" in worker_model else worker_model)
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-    review_timeout = int(os.getenv("OPENCLAW_REVIEW_TIMEOUT_SECONDS", "60"))
 
     config = collect_passthrough([runtime_existing, repo_existing])
     config.update(
         build_base_config(
             worker_model=worker_model,
-            review_model=review_model,
-            review_cron=review_cron,
-            review_timezone=review_timezone,
             ollama_model=ollama_model,
             ollama_base_url=ollama_base_url,
-            review_timeout=review_timeout,
         )
     )
     assert_forbidden_paths_absent(config)
@@ -199,10 +173,13 @@ def run_self_test() -> dict[str, Any]:
         raise SystemExit("self-test failed: non-controlled top-level keys were not preserved")
     if config["agents"]["defaults"]["model"]["primary"] != os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest"):
         raise SystemExit("self-test failed: worker model was not rebuilt")
+    if "cronJobs" in config:
+        raise SystemExit("self-test failed: legacy cronJobs block was not removed")
     assert_forbidden_paths_absent(config)
     return {
         "ok": True,
         "preserved_top_level_keys": sorted(key for key in config if key not in CONTROLLED_TOP_LEVEL_KEYS),
+        "removed_controlled_keys": ["cronJobs"],
         "forbidden_paths_checked": [".".join(item) for item in FORBIDDEN_PATHS],
     }
 
@@ -223,6 +200,7 @@ def render_config() -> dict[str, Any]:
     return {
         "ok": True,
         "rendered": [str(repo_config_path), str(runtime_config_path)],
+        "removed_controlled_keys": ["cronJobs"],
         "forbidden_paths_checked": [".".join(item) for item in FORBIDDEN_PATHS],
     }
 
