@@ -13,7 +13,9 @@ import uvicorn
 
 from runner_common import (
     archon_post,
+    assert_runtime_ready,
     build_review_message,
+    build_runtime_diagnostics,
     cron_matches,
     extract_first_json_object,
     run_openclaw_agent,
@@ -28,7 +30,7 @@ REVIEW_TIMEZONE = os.getenv("REVIEW_TIMEZONE", "UTC")
 OWNER_NAME = os.getenv("REVIEW_OWNER_NAME", "openclaw-reviewer")
 RUN_LOOP = os.getenv("REVIEW_BACKGROUND_LOOP", "true").lower() == "true"
 
-app = FastAPI(title="OpenClaw Reviewer Runner", version="0.2.0")
+app = FastAPI(title="OpenClaw Reviewer Runner", version="0.3.0")
 STATE: dict[str, Any] = {"last_run_at": None, "last_result": None, "last_error": None, "last_cron_minute": None}
 
 
@@ -37,6 +39,11 @@ def _now() -> str:
 
 
 def process_one() -> dict[str, Any]:
+    assert_runtime_ready(
+        agent_id=REVIEW_AGENT,
+        expected_model=OPENCLAW_REVIEW_MODEL,
+        required_oauth_provider="openai-codex",
+    )
     claimed = archon_post(
         "/tasks/claim",
         {
@@ -66,20 +73,23 @@ def process_one() -> dict[str, Any]:
                 "review_queue": ARCHON_REVIEW_QUEUE,
                 "agent": REVIEW_AGENT,
                 "model": OPENCLAW_REVIEW_MODEL,
-                "status": "pending_human_approval",
+                "status": "failed",
                 "summary": "Codex review command failed.",
                 "findings": [result.stderr.strip() or "review command failed without stderr"],
-                "follow_up": ["Inspect OpenClaw auth and provider setup."],
-                "requires_human_approval": True,
+                "follow_up": ["Inspect OpenClaw OAuth onboarding and provider setup."],
+                "requires_human_approval": False,
                 "raw_output": result.stdout,
             },
         )
-        archon_post(f"/tasks/{task_id}/release", {"owner": OWNER_NAME, "status": persisted["status"], "last_error": result.stderr.strip()})
+        archon_post(
+            f"/tasks/{task_id}/release",
+            {"owner": OWNER_NAME, "status": persisted["status"], "last_error": result.stderr.strip()},
+        )
         return {"processed": 1, "task_id": task_id, "status": persisted["status"]}
 
     payload = extract_first_json_object(result.stdout) or {}
     status = payload.get("status", "pending_human_approval")
-    if status not in {"approved", "needs_changes", "rejected", "pending_human_approval"}:
+    if status not in {"approved", "needs_changes", "rejected", "pending_human_approval", "failed"}:
         status = "pending_human_approval"
     summary = payload.get("summary") or "Codex review finished."
     findings = [str(item) for item in (payload.get("findings") or [])]
@@ -129,12 +139,18 @@ def startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    diagnostics = build_runtime_diagnostics(
+        agent_id=REVIEW_AGENT,
+        expected_model=OPENCLAW_REVIEW_MODEL,
+        required_oauth_provider="openai-codex",
+    )
     return {
-        "ok": OPENCLAW_REVIEW_MODEL.startswith("openai-codex/"),
+        "ok": diagnostics["ok"] and OPENCLAW_REVIEW_MODEL.startswith("openai-codex/"),
         "agent": REVIEW_AGENT,
         "model": OPENCLAW_REVIEW_MODEL,
         "cron": REVIEW_CRON,
         "timezone": REVIEW_TIMEZONE,
+        "runtime": diagnostics,
         **STATE,
     }
 

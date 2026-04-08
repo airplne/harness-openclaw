@@ -40,6 +40,8 @@ services:
   openclaw-gateway:
     build:
       context: ./services/openclaw-runtime
+      args:
+        OPENCLAW_IMAGE: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     image: harness-openclaw-runtime:local
     container_name: harness-openclaw-gateway
     restart: unless-stopped
@@ -49,15 +51,11 @@ services:
       ollama:
         condition: service_healthy
     environment:
-      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-change-me}
       NODE_ENV: production
     volumes:
       - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
-    command: ["node", "dist/index.js", "gateway", "--port", "18789", "--verbose"]
-    ports:
-      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+    command: ["node", "dist/index.js", "gateway", "--port", "18789", "--bind", "loopback", "--allow-unconfigured", "--verbose"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:18789/healthz"]
       interval: 15s
@@ -73,9 +71,6 @@ services:
     depends_on:
       openclaw-gateway:
         condition: service_healthy
-    environment:
-      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-change-me}
     volumes:
       - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
@@ -95,6 +90,8 @@ services:
     environment:
       ARCHON_API_BASE_URL: http://archon:8080
       OPENCLAW_BIN: openclaw
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /workspace
       WORKER_AGENT: archon-worker
       OPENCLAW_WORKER_MODEL: ${OPENCLAW_WORKER_MODEL:-ollama/qwen3-coder:latest}
       OPENCLAW_WORKER_TIMEOUT_SECONDS: 600
@@ -124,6 +121,8 @@ services:
     environment:
       ARCHON_API_BASE_URL: http://archon:8080
       OPENCLAW_BIN: openclaw
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /workspace
       REVIEW_AGENT: codex-reviewer
       OPENCLAW_REVIEW_MODEL: ${OPENCLAW_REVIEW_MODEL:-openai-codex/gpt-5.4}
       OPENCLAW_REVIEW_TIMEOUT_SECONDS: ${OPENCLAW_REVIEW_TIMEOUT_SECONDS:-60}

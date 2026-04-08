@@ -1,16 +1,35 @@
 # Harness OpenClaw
 
-This repo now wires a **real OpenClaw runtime base image**, **Ollama** as the routine worker path, **Codex** as the isolated scheduled reviewer, and **Archon** as the task / approval / operator layer.
+This repo implements a hybrid OpenClaw harness with:
+
+- **Ollama** as the routine worker path
+- **Codex** as the review-only path through ChatGPT OAuth
+- **Archon** as the task, review, and approval control plane
+- **OpenClaw MCP** wiring for Archon tool access
+
+## Authentication model
+
+This harness no longer relies on environment variables for provider credentials.
+
+Provider auth now follows the OpenClaw auth-profile pattern:
+
+- Auth state lives under `.data/openclaw-config/**/auth-profiles.json`
+- Codex reviewer access is provisioned through **OpenAI Codex OAuth**
+- The harness refuses startup validation when manual `api_key` or `token` auth profiles are present
+- Local Ollama usage does not require a credential; when operators choose an authenticated Ollama cloud/local setup, it must be established through OpenClaw onboarding rather than shell env injection
+
+The compose stack also no longer injects provider credentials into container environments.
 
 ## What is real in this repository
 
-- `openclaw-gateway` runs from the official `ghcr.io/openclaw/openclaw:latest` image via a derived runtime image.
+- `openclaw-gateway` runs from a runtime derived from the official `ghcr.io/openclaw/openclaw:latest` image.
 - `openclaw-worker` invokes the real `openclaw` CLI with the dedicated `archon-worker` agent.
 - `openclaw-reviewer` invokes the real `openclaw` CLI with the dedicated `codex-reviewer` agent.
 - `archon` persists tasks, worker runs, reviews, approvals, and task-claim leases in SQLite.
 - `services/archon-mcp/server.py` is a real stdio MCP server, and `.openclaw/openclaw.json` points OpenClaw at it through `mcp.servers.archon`.
-- `POST /work/run` and `POST /reviews/run` are no longer stubs; they forward to the worker and reviewer services.
-- `scripts/run-smoke-test.sh` now asserts persisted worker and review records, not just health checks.
+- `POST /work/run` and `POST /reviews/run` are real forwarding endpoints.
+- `scripts/run-smoke-test.sh` asserts persisted worker and review records plus post-review task state.
+- `scripts/run-live-validation.sh` captures live verification artifacts for operator review.
 
 ## Architecture
 
@@ -18,7 +37,7 @@ This repo now wires a **real OpenClaw runtime base image**, **Ollama** as the ro
 - **Ollama** = heavy-lift worker model for `archon-worker`
 - **Codex** = review-only model for `codex-reviewer`
 - **Archon** = tasks, reviews, approvals, and operator visibility
-- **Archon MCP** = real stdio MCP server that OpenClaw can launch from config
+- **Archon MCP** = real stdio MCP server launched from OpenClaw config
 
 ## Canonical task flow
 
@@ -31,6 +50,7 @@ This repo now wires a **real OpenClaw runtime base image**, **Ollama** as the ro
    - `approved`
    - `needs_changes`
    - `rejected`
+   - `failed`
 6. A human approval can be recorded through `POST /approvals`.
 
 ## Setup
@@ -54,7 +74,13 @@ docker compose up -d --build
 bash scripts/onboard-openclaw.sh
 ```
 
-That onboarding command runs **inside the official OpenClaw gateway image**, stores auth under `.data/openclaw-config`, creates the dedicated worker and reviewer agents, and pulls the local Ollama model.
+That onboarding flow:
+
+- runs OpenClaw onboarding in the runtime image
+- provisions Codex auth through OpenClaw OAuth
+- configures Ollama through OpenClaw onboarding rather than shell credentials
+- verifies the dedicated worker and reviewer agents exist with the expected model bindings
+- fails if non-OAuth manual provider credentials remain in auth profiles
 
 ## Exact operator commands
 
@@ -110,31 +136,59 @@ curl -X POST http://localhost:8080/approvals \
 After onboarding and model pull complete:
 
 ```bash
-ARCHON_API_BASE_URL=http://localhost:8080 \
-OPENCLAW_GATEWAY_HTTP_BASE_URL=http://localhost:18789 \
-OLLAMA_HTTP_BASE_URL=http://localhost:11434 \
 bash scripts/run-smoke-test.sh
 ```
 
-This smoke test now verifies:
+The smoke test now verifies:
 
 - the task was created
 - a worker run was persisted
 - a review run was persisted
 - the task advanced into a post-review state
 
-## Validation checklist
+## Live validation
 
-Gateway health:
+To generate the operator evidence bundle for the items that were previously “not fully proven”:
 
 ```bash
-curl http://localhost:18789/healthz
+bash scripts/run-live-validation.sh
 ```
+
+That script collects:
+
+- Archon, worker, reviewer, and gateway health
+- agent inventory and model bindings
+- auth-profile summaries
+- environment leak checks for deprecated auth vars
+- smoke-test results
+- persisted `tasks`, `worker-runs`, `reviews`, and `approvals`
+
+Artifacts are written under `.data/validation/latest`.
+
+## Validation checklist
 
 Archon health:
 
 ```bash
 curl http://localhost:8080/health | jq
+```
+
+Worker health:
+
+```bash
+curl http://localhost:8091/health | jq
+```
+
+Reviewer health:
+
+```bash
+curl http://localhost:8092/health | jq
+```
+
+Gateway health through the CLI container:
+
+```bash
+docker compose run --rm openclaw-cli gateway health --url ws://127.0.0.1:18789 --json
 ```
 
 Ollama model list:
@@ -152,12 +206,23 @@ cat .data/openclaw-config/openclaw.json | jq
 
 ## Important runtime notes
 
-- The worker/reviewer split is enforced by **dedicated OpenClaw agents**:
-  - `archon-worker` must use `OPENCLAW_WORKER_MODEL`
-  - `codex-reviewer` must use `OPENCLAW_REVIEW_MODEL`
-- The reviewer service rejects healthy status unless the configured model name starts with `openai-codex/`.
+- The worker/reviewer split is enforced by **dedicated OpenClaw agents** and by runtime validation of the bound model for each agent.
+- The reviewer service rejects healthy status unless:
+  - the configured model exactly matches `OPENCLAW_REVIEW_MODEL`
+  - the model starts with `openai-codex/`
+  - an OAuth auth profile exists for `openai-codex`
 - The runtime no longer shells task content into `shell=True`; all `openclaw` execution uses argv-based subprocess calls.
-- The OpenClaw config and runtime files are rendered from `.env` through `scripts/render-openclaw-config.py`.
+- The OpenClaw config renderer preserves provider auth state instead of re-writing credentials into config or env files.
+- Review command failures now persist a first-class `failed` review result instead of silently downgrading into `pending_human_approval`.
+
+## What still requires operator-run validation
+
+This repository now encodes the OAuth-only runtime shape and fail-fast validation logic, but two things still require an operator to run them in a real environment:
+
+1. pulling and starting the official OpenClaw image through Docker
+2. completing the live browser-based Codex OAuth flow
+
+Those steps are exactly what `scripts/onboard-openclaw.sh` and `scripts/run-live-validation.sh` are for.
 
 ## Files to inspect
 
@@ -167,7 +232,10 @@ cat .data/openclaw-config/openclaw.json | jq
 - `services/archon-control-plane/app.py`
 - `services/archon-mcp/server.py`
 - `services/openclaw-runtime/Dockerfile`
+- `services/openclaw-runtime/runner_common.py`
 - `services/openclaw-runtime/worker_loop.py`
 - `services/openclaw-runtime/review_loop.py`
+- `scripts/onboard-openclaw.sh`
+- `scripts/run-live-validation.sh`
 - `skills/archon-worker/SKILL.md`
 - `skills/codex-reviewer/SKILL.md`

@@ -3,8 +3,7 @@
     "defaults": {
       "workspace": "/workspace",
       "model": {
-        "primary": "ollama/qwen3-coder:latest",
-        "fallbacks": ["openai-codex/gpt-5.4"]
+        "primary": "ollama/qwen3-coder:latest"
       },
       "heartbeat": {
         "every": "5m",
@@ -17,14 +16,15 @@
     "providers": {
       "ollama": {
         "baseUrl": "http://ollama:11434",
-        "apiKey": "ollama-local",
         "api": "ollama",
         "models": [
           {
             "id": "qwen3-coder:latest",
-            "name": "Qwen3 Coder",
+            "name": "qwen3-coder:latest",
             "reasoning": false,
-            "input": ["text"],
+            "input": [
+              "text"
+            ],
             "cost": {
               "input": 0,
               "output": 0,
@@ -42,7 +42,9 @@
     "servers": {
       "archon": {
         "command": "python3",
-        "args": ["/workspace/services/archon-mcp/server.py"],
+        "args": [
+          "/workspace/services/archon-mcp/server.py"
+        ],
         "env": {
           "ARCHON_API_BASE_URL": "http://archon:8080"
         }

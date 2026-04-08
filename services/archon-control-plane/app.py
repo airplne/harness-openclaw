@@ -29,9 +29,11 @@ TaskStatus = Literal[
     "failed",
 ]
 ApprovalDecision = Literal["approved", "needs_changes", "rejected"]
+WorkerRunStatus = Literal["completed", "blocked", "failed"]
+ReviewStatus = Literal["approved", "needs_changes", "rejected", "pending_human_approval", "failed"]
 RunKind = Literal["worker", "review"]
 
-app = FastAPI(title="Archon Control Plane", version="0.2.0")
+app = FastAPI(title="Archon Control Plane", version="0.3.0")
 
 
 def utcnow() -> str:
@@ -171,7 +173,7 @@ class WorkerRunIn(BaseModel):
     task_id: int
     agent: str
     model: str
-    status: Literal["completed", "blocked", "failed"]
+    status: WorkerRunStatus
     summary: str | None = None
     artifacts: list[str] = Field(default_factory=list)
     follow_up: list[str] = Field(default_factory=list)
@@ -183,7 +185,7 @@ class ReviewIn(BaseModel):
     review_queue: str = "codex-review"
     agent: str = "codex-reviewer"
     model: str = "openai-codex/gpt-5.4"
-    status: Literal["approved", "needs_changes", "rejected", "pending_human_approval"]
+    status: ReviewStatus
     summary: str | None = None
     findings: list[str] = Field(default_factory=list)
     follow_up: list[str] = Field(default_factory=list)
@@ -222,6 +224,15 @@ def list_tasks(status: TaskStatus | None = None) -> dict[str, Any]:
         else:
             rows = conn.execute("SELECT * FROM tasks ORDER BY updated_at DESC").fetchall()
     return {"items": [_task_row_to_dict(row) for row in rows]}
+
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: int) -> dict[str, Any]:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return _task_row_to_dict(row)
 
 
 @app.post("/tasks")
@@ -267,7 +278,7 @@ def patch_task(task_id: int, patch: TaskPatch) -> dict[str, Any]:
             "assignee": patch.assignee if patch.assignee is not None else current["assignee"],
             "review_after": patch.review_after if patch.review_after is not None else current["review_after"],
             "metadata": patch.metadata if patch.metadata is not None else current["metadata"],
-            "last_error": patch.last_error if patch.last_error is not None else current["last_error"],
+            "last_error": patch.last_error if patch.last_error is not None else current.get("last_error"),
         }
         conn.execute(
             '''
@@ -304,17 +315,18 @@ def transition_task(task_id: int, transition: TransitionIn) -> dict[str, Any]:
 
 @app.post("/tasks/claim")
 def claim_task(payload: ClaimIn) -> dict[str, Any]:
+    if not payload.eligible_statuses:
+        return {"item": None}
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     claim_until = (now_dt + timedelta(seconds=payload.ttl_seconds)).isoformat()
     with db() as conn:
-        candidates = conn.execute(
-            "SELECT * FROM tasks WHERE status IN ({}) ORDER BY updated_at ASC".format(
-                ",".join("?" for _ in payload.eligible_statuses)
-            ),
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE status IN ({}) ORDER BY updated_at ASC".format(",".join("?" for _ in payload.eligible_statuses)),
             tuple(payload.eligible_statuses),
         ).fetchall()
-        for row in candidates:
+        for row in rows:
             current_until = _parse_iso(row["claim_until"])
             if row["claim_owner"] and current_until and current_until > now_dt:
                 continue
@@ -352,18 +364,14 @@ def release_task(task_id: int, payload: ReleaseIn) -> dict[str, Any]:
 @app.get("/work/queue")
 def work_queue() -> dict[str, Any]:
     with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM tasks WHERE status IN ('queued', 'needs_changes') ORDER BY updated_at ASC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM tasks WHERE status IN ('queued', 'needs_changes') ORDER BY updated_at ASC").fetchall()
     return {"items": [_task_row_to_dict(row) for row in rows]}
 
 
 @app.get("/reviews/queue")
 def review_queue() -> dict[str, Any]:
     with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'review_requested' ORDER BY updated_at ASC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM tasks WHERE status = 'review_requested' ORDER BY updated_at ASC").fetchall()
     return {"items": [_task_row_to_dict(row) for row in rows], "require_human_approval": REQUIRE_HUMAN_APPROVAL}
 
 
@@ -397,9 +405,12 @@ def create_worker_run(run: WorkerRunIn) -> dict[str, Any]:
 
 
 @app.get("/worker-runs")
-def list_worker_runs() -> dict[str, Any]:
+def list_worker_runs(task_id: int | None = None) -> dict[str, Any]:
     with db() as conn:
-        rows = conn.execute("SELECT * FROM worker_runs ORDER BY created_at DESC").fetchall()
+        if task_id is None:
+            rows = conn.execute("SELECT * FROM worker_runs ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM worker_runs WHERE task_id = ? ORDER BY created_at DESC", (task_id,)).fetchall()
     items = []
     for row in rows:
         item = dict(row)
@@ -446,9 +457,12 @@ def create_review(review: ReviewIn) -> dict[str, Any]:
 
 
 @app.get("/reviews")
-def list_reviews() -> dict[str, Any]:
+def list_reviews(task_id: int | None = None) -> dict[str, Any]:
     with db() as conn:
-        rows = conn.execute("SELECT * FROM reviews ORDER BY created_at DESC").fetchall()
+        if task_id is None:
+            rows = conn.execute("SELECT * FROM reviews ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at DESC", (task_id,)).fetchall()
     items = []
     for row in rows:
         item = dict(row)
@@ -460,9 +474,12 @@ def list_reviews() -> dict[str, Any]:
 
 
 @app.get("/approvals")
-def list_approvals() -> dict[str, Any]:
+def list_approvals(task_id: int | None = None) -> dict[str, Any]:
     with db() as conn:
-        rows = conn.execute("SELECT * FROM approvals ORDER BY created_at DESC").fetchall()
+        if task_id is None:
+            rows = conn.execute("SELECT * FROM approvals ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM approvals WHERE task_id = ? ORDER BY created_at DESC", (task_id,)).fetchall()
     return {"items": [dict(row) for row in rows]}
 
 
@@ -482,7 +499,12 @@ def create_approval(approval: ApprovalIn) -> dict[str, Any]:
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    req = request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+    req = request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     with request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

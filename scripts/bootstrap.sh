@@ -13,7 +13,7 @@ set -a
 source .env
 set +a
 
-mkdir -p .data/openclaw-config .data/archon .data/ollama
+mkdir -p .data/openclaw-config .data/archon .data/ollama .data/validation
 python3 scripts/render-openclaw-config.py
 
 echo "[bootstrap] rendered OpenClaw config and local runtime directories"

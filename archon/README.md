@@ -33,6 +33,7 @@ The OpenClaw config points `mcp.servers.archon` to the stdio MCP server, which i
 
 - `POST /tasks`
 - `GET /tasks`
+- `GET /tasks/{id}`
 - `PATCH /tasks/{id}`
 - `POST /tasks/{id}/transition`
 - `POST /tasks/claim`

@@ -12,6 +12,8 @@ import uvicorn
 
 from runner_common import (
     archon_post,
+    assert_runtime_ready,
+    build_runtime_diagnostics,
     build_worker_message,
     extract_first_json_object,
     run_openclaw_agent,
@@ -24,7 +26,7 @@ OPENCLAW_WORKER_TIMEOUT_SECONDS = int(os.getenv("OPENCLAW_WORKER_TIMEOUT_SECONDS
 OWNER_NAME = os.getenv("WORKER_OWNER_NAME", "openclaw-worker")
 RUN_LOOP = os.getenv("WORKER_BACKGROUND_LOOP", "true").lower() == "true"
 
-app = FastAPI(title="OpenClaw Worker Runner", version="0.2.0")
+app = FastAPI(title="OpenClaw Worker Runner", version="0.3.0")
 STATE: dict[str, Any] = {"last_run_at": None, "last_result": None, "last_error": None}
 
 
@@ -33,6 +35,7 @@ def _now() -> str:
 
 
 def process_one() -> dict[str, Any]:
+    assert_runtime_ready(agent_id=WORKER_AGENT, expected_model=OPENCLAW_WORKER_MODEL)
     claimed = archon_post(
         "/tasks/claim",
         {
@@ -123,11 +126,13 @@ def startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    diagnostics = build_runtime_diagnostics(agent_id=WORKER_AGENT, expected_model=OPENCLAW_WORKER_MODEL)
     return {
-        "ok": True,
+        "ok": diagnostics["ok"],
         "agent": WORKER_AGENT,
         "model": OPENCLAW_WORKER_MODEL,
         "poll_seconds": WORKER_POLL_SECONDS,
+        "runtime": diagnostics,
         **STATE,
     }
 
