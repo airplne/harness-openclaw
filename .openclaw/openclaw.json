@@ -1,0 +1,54 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/workspace",
+      "model": {
+        "primary": "ollama/qwen3-coder:latest"
+      },
+      "heartbeat": {
+        "every": "5m",
+        "target": "last",
+        "lightContext": false
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "qwen3-coder:latest",
+            "name": "qwen3-coder:latest",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "archon": {
+        "command": "python3",
+        "args": [
+          "/workspace/services/archon-mcp/server.py"
+        ],
+        "env": {
+          "ARCHON_API_BASE_URL": "http://archon:8080"
+        }
+      }
+    }
+  }
+}
