@@ -127,7 +127,7 @@ def build_base_config(
 
 
 def build_config(repo_existing: dict[str, Any], runtime_existing: dict[str, Any]) -> dict[str, Any]:
-    worker_model = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest")
+    worker_model = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/llama3.1:8b")
     ollama_model = os.getenv("OLLAMA_MODEL", worker_model.split("/", 1)[1] if "/" in worker_model else worker_model)
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 
@@ -171,7 +171,7 @@ def run_self_test() -> dict[str, Any]:
     config = build_config(stale, stale)
     if config.get("ui") != {"theme": "dark"}:
         raise SystemExit("self-test failed: non-controlled top-level keys were not preserved")
-    if config["agents"]["defaults"]["model"]["primary"] != os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest"):
+    if config["agents"]["defaults"]["model"]["primary"] != os.getenv("OPENCLAW_WORKER_MODEL", "ollama/llama3.1:8b"):
         raise SystemExit("self-test failed: worker model was not rebuilt")
     if "cronJobs" in config:
         raise SystemExit("self-test failed: legacy cronJobs block was not removed")

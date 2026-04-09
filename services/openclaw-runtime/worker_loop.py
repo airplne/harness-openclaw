@@ -20,7 +20,7 @@ from runner_common import (
 )
 
 WORKER_AGENT = os.getenv("WORKER_AGENT", "archon-worker")
-OPENCLAW_WORKER_MODEL = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/qwen3-coder:latest")
+OPENCLAW_WORKER_MODEL = os.getenv("OPENCLAW_WORKER_MODEL", "ollama/llama3.1:8b")
 WORKER_POLL_SECONDS = int(os.getenv("WORKER_POLL_SECONDS", "15"))
 OPENCLAW_WORKER_TIMEOUT_SECONDS = int(os.getenv("OPENCLAW_WORKER_TIMEOUT_SECONDS", "600"))
 OWNER_NAME = os.getenv("WORKER_OWNER_NAME", "openclaw-worker")

@@ -204,6 +204,12 @@ Ollama model list:
 curl http://localhost:11434/api/tags | jq
 ```
 
+Default local worker model:
+
+```text
+llama3.1:8b
+```
+
 Rendered OpenClaw config:
 
 ```bash

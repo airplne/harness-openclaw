@@ -101,7 +101,7 @@ services:
       OPENCLAW_STATE_DIR: /home/node/.openclaw
       OPENCLAW_WORKSPACE_DIR: /workspace
       WORKER_AGENT: archon-worker
-      OPENCLAW_WORKER_MODEL: ${OPENCLAW_WORKER_MODEL:-ollama/qwen3-coder:latest}
+      OPENCLAW_WORKER_MODEL: ${OPENCLAW_WORKER_MODEL:-ollama/llama3.1:8b}
       OPENCLAW_WORKER_TIMEOUT_SECONDS: 600
       WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-15}
       WORKER_BACKGROUND_LOOP: "true"
