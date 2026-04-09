@@ -8,3 +8,10 @@ __pycache__/
 *.db
 .pytest_cache/
 .venv/
+.openclaw/workspace-state.json
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
