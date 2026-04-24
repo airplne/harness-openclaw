@@ -1,566 +1,549 @@
-# Enterprise Hardening Epics and Stories
+# Secure-by-Default Control Plane Backlog
 
 Date: 2026-04-24
 Project: `harness-openclaw`
-Prepared by: Mary with BMAD party-mode roundtable input from John, Winston, Amelia, and Murat
+Prepared by: Mary with BMAD party-mode input and revised against GPT review feedback
 
-## Objective
+## Purpose
 
-Close the highest-risk enterprise-readiness gaps in the control plane and runtime stack with a delivery sequence that reduces real risk first:
+Introduce the minimum secure-by-default controls required to operate the Archon control plane, MCP integration, and runner ingress paths in enterprise environments.
 
-1. Make unauthenticated and untraceable control-plane actions impossible.
-2. Establish scoped service identity and request traceability.
-3. Build durable auditability and safe retention defaults.
-4. Enforce the new controls with automated tests and CI gates.
-5. Add operational runbooks and follow-through hardening after the core controls are real.
+This backlog is intentionally narrow. It is not a generic “enterprise hardening” wishlist.
 
-## Guiding Position
+## What This PR Changes
 
-The first epic must be:
+This PR adds planning artifacts only. It does not claim the code already implements the controls below.
 
-**Fail-Closed Archon Control Plane with Scoped Service Auth and Request Traceability**
+This revised planning set fixes the defects called out in the first GPT review:
 
-Do not start with PostgreSQL migration, SIEM export, broad RBAC expansion, dashboards, or generic “enterprise security improvements.” Those belong after the trust boundary is real.
+- explicitly covers the Archon MCP trust boundary
+- brings runner `/run-once` protection into Release A
+- removes misleading wording about a pre-existing shared Archon token model
+- moves minimal auth/authz audit into Release A to avoid the audit dependency loop
+- adds early `raw_output` persistence controls
+- adds rollout stories for operator commands, health checks, smoke tests, and live validation
+- adds a credential mechanism ADR and a route/tool scope matrix
+- adds a database migration/versioning foundation before durable audit changes
+- stops assuming CI and supporting docs already exist on the PR head
 
-## Recommended Delivery Order
+## Current State
 
-1. Epic 1: Fail-Closed Control Plane Authentication and Service Identity
-2. Epic 2: Request Traceability and Structured Observability
-3. Epic 3: Durable Audit Trail and Accountability
-4. Epic 5: Automated Verification and Security Regression Coverage
-5. Epic 4: Data Retention, Privacy, and Safe Defaults
-6. Epic 6: Operational Readiness and Security Runbooks
+This backlog is based on the current code truth visible in the repository workspace:
 
-## Release Slices
+| Area | Current-state evidence | Planning implication |
+|---|---|---|
+| Archon MCP | `services/archon-mcp/server.py` exposes mutating tools for create task, transition task, record review, and request approval | MCP is a privileged caller and must get its own identity, scopes, tracing, and audit coverage |
+| Runner ingress | `services/openclaw-runtime/worker_loop.py` and `review_loop.py` expose `POST /run-once` | Runner ingress is part of Release A, not a later hardening step |
+| Raw output persistence | worker and reviewer send `result.stdout` to Archon persistence paths | `raw_output` control must happen before telemetry expands |
+| Archon persistence | `services/archon-control-plane/app.py` initializes SQLite tables directly on startup | schema versioning and migration discipline must be introduced before durable audit changes |
+| Operator paths | README commands, health checks, smoke/live validation, and compose behavior will change once auth is enforced | rollout docs, scripts, and authenticated operator flows must be first-class stories |
+| CI/docs in PR snapshot | this PR branch only carries planning artifacts added here | CI creation and doc expansion must be planned explicitly, not assumed as existing review context |
 
-### Release A: Trusted Control Plane
+## Companion Planning Docs in This PR
 
-Includes:
+Read these with this backlog:
 
-- Epic 1 stories 1.1 through 1.4
-- Epic 5 story 5.1
+- [enterprise-hardening-current-state-and-assumptions.md](/home/aip0rt/Desktop/harness-openclaw/_bmad-output/planning-artifacts/enterprise-hardening-current-state-and-assumptions.md)
+- [enterprise-hardening-auth-adr.md](/home/aip0rt/Desktop/harness-openclaw/_bmad-output/planning-artifacts/enterprise-hardening-auth-adr.md)
+- [enterprise-hardening-scope-matrix.md](/home/aip0rt/Desktop/harness-openclaw/_bmad-output/planning-artifacts/enterprise-hardening-scope-matrix.md)
+- [enterprise-hardening-release-validation-and-rollout.md](/home/aip0rt/Desktop/harness-openclaw/_bmad-output/planning-artifacts/enterprise-hardening-release-validation-and-rollout.md)
 
-Success metric:
+## Release Boundaries
 
-- Zero successful unauthenticated privileged control-plane calls in test and staging.
-- Missing required auth config prevents startup outside explicitly insecure local development mode.
+### Release A: Secure-by-Default Control Plane
 
-### Release B: Traceable Actions
+Goal:
+Remove the highest-risk exposure first: privileged actions without identity, scope enforcement, traceability, or minimal audit evidence.
 
-Includes:
+Approval bar:
 
-- Epic 2 stories 2.1 through 2.3
-- Epic 3 stories 3.1 and 3.2
-- Epic 5 stories 5.2 and 5.3
+- no privileged Archon, MCP, or runner ingress path without identity
+- no over-broad caller privilege on mutating routes or MCP tools
+- no manual run trigger path without protection
+- no sensitive raw model output persisted by default
+- authenticated operator flow, health model, smoke checks, and validation path are documented and testable
 
-Success metric:
+### Release B: Durable Audit and Data Governance
 
-- A privileged request can be traced end-to-end across Archon, worker, and reviewer using a shared request ID.
-- Auth decisions and privileged actions are reconstructable from logs plus audit records.
+Goal:
+Make Release A accountable, durable, and governable.
 
-### Release C: Operable and Defensible
+### Release C: Adoption, CI, and Operational Safety
 
-Includes:
+Goal:
+Make the hardened path repeatable to deploy, validate, and operate.
 
-- Epic 3 stories 3.3 and 3.4
-- Epic 4 stories 4.1 through 4.4
-- Epic 5 story 5.4
-- Epic 6 stories 6.1 through 6.3
+## Recommended Epic Order
 
-Success metric:
+1. Epic 0: Foundation Decisions and Repo Truth
+2. Epic 1: Release A Ingress Protection and Identity
+3. Epic 2: Release A Traceability, Minimal Audit, and Raw Output Control
+4. Epic 3: Release A Operator and Validation Migration
+5. Epic 4: Durable Audit and Schema Migration
+6. Epic 5: Data Retention and Privacy Controls
+7. Epic 6: CI Security Validation Gates
+8. Epic 7: Runbooks, Rollout, and Readiness
 
-- The team can rotate a service credential, investigate suspicious activity, and validate retention behavior without ad hoc code inspection.
-
-## Epic 1: Fail-Closed Control Plane Authentication and Service Identity
+## Epic 0: Foundation Decisions and Repo Truth
 
 Outcome:
-No Archon control-plane request is accepted without valid authentication, and every caller has a distinct scoped identity.
+Implementation starts from explicit design decisions and an accurate inventory, not assumptions.
 
-### Story 1.1: Enforce fail-closed auth in the Archon request pipeline
+### Story EH-00: Correct current-state architecture and repo inventory
 
 Problem reduced:
-Unauthorized or ambiguous access to the control plane.
+Planning defects caused by assuming docs, CI, auth, or rollout assets already exist.
 
 Acceptance criteria:
 
-- Any request missing a token is rejected with `401` or `403`.
-- Any malformed, expired, unverifiable, or wrong-audience token is rejected.
-- No code path allows “missing token means trusted/internal.”
-- Startup fails in non-dev modes if required auth configuration is missing.
-- Health behavior is explicit: public `healthz` only if intentionally allowed; privileged readiness remains protected if needed.
+- Current state is documented for Archon auth, MCP, runner ingress, raw output persistence, operator flows, schema management, and CI/doc availability.
+- The story explicitly states which files exist today and which are planning additions in this PR.
+- The planning set does not refer to CI jobs, docs, or scripts as already present unless they are included in the PR or visible in the repo truth table.
 
-Non-goals:
-
-- Full SSO or human-facing RBAC.
-
-Dependencies:
+Depends on:
 
 - None.
 
-### Story 1.2: Replace the shared token with per-service identities
+### Story EH-01: Approve the credential mechanism ADR
 
 Problem reduced:
-Shared-secret blast radius and inability to attribute service actions.
+Mechanism-vague auth requirements that invite incompatible implementations.
 
 Acceptance criteria:
 
-- `worker`, `reviewer`, `operator/admin`, and `readonly` identities are distinct.
-- Service credentials are independently revocable.
-- Service identity is visible in request metadata and available to audit/logging layers.
-- Worker credentials cannot perform reviewer or operator actions.
-- Reviewer credentials cannot perform worker or operator actions.
+- The credential mechanism is explicitly chosen for Release A.
+- Storage, injection, rotation, revocation, bootstrap, and local-dev fallback are defined.
+- The chosen mechanism covers these actors: `archon`, `worker`, `reviewer`, `mcp`, `operator`, `readonly`.
+- Non-goals and deferred alternatives are stated.
 
-Non-goals:
+Depends on:
 
-- External enterprise IAM federation.
+- Story EH-00.
 
-Dependencies:
-
-- Story 1.1.
-
-### Story 1.3: Define and enforce authorization scopes per identity
+### Story EH-02: Publish the route and tool scope matrix
 
 Problem reduced:
-Authenticated but over-privileged callers.
+Over-broad or ambiguous authorization rules.
 
 Acceptance criteria:
 
-- A scope matrix maps identities to allowed endpoints/actions.
-- Archon enforces least privilege at route/action level.
-- Unauthorized but authenticated requests are denied and audited.
-- The scope model is documented and versioned.
-- Negative-path tests cover wrong-scope requests for all defined identities.
+- Every privileged Archon route, runner ingress endpoint, and MCP tool is mapped to allowed identities.
+- MCP tools are mapped to underlying Archon actions and audit expectations.
+- Public versus protected health endpoints are explicitly listed.
+- Negative-path expectations exist for wrong-scope callers.
 
-Non-goals:
+Depends on:
 
-- Fine-grained end-user permissions.
+- Story EH-01.
 
-Dependencies:
-
-- Story 1.2.
-
-### Story 1.4: Harden bootstrap and secret handling for dev and non-dev modes
+### Story EH-03: Introduce database schema versioning and migration discipline
 
 Problem reduced:
-Implicit insecure defaults and unclear secret precedence.
+Schema changes for audit and retention without a safe upgrade path.
 
 Acceptance criteria:
 
-- Startup fails clearly when required auth secrets are absent in non-dev modes.
-- Local development has an explicit, documented bootstrap path.
-- Insecure local bypass requires an explicit flag and is noisy in logs/health diagnostics.
-- Compose examples stop normalizing a shared static secret as the default pattern.
-- Secret sources and precedence are documented.
+- A versioned migration approach is defined before durable audit changes land.
+- Forward migration, idempotent rerun behavior, and rollback or restore strategy are documented.
+- Mixed-version or staged-rollout compatibility expectations are stated.
+- Migration tests against an existing SQLite baseline are required by the story.
 
-Non-goals:
+Depends on:
 
-- External secret manager integration by default.
+- Story EH-00.
 
-Dependencies:
-
-- Stories 1.1 through 1.3.
-
-## Epic 2: Request Traceability and Structured Observability
+## Epic 1: Release A Ingress Protection and Identity
 
 Outcome:
-Every meaningful control-plane action can be followed across services with structured logs and correlation identifiers.
+All privileged entry points are fail-closed and tied to distinct caller identities.
 
-### Story 2.1: Add request ID generation, validation, and propagation
+### Story EH-A1: Enforce fail-closed auth on Archon ingress
 
 Problem reduced:
-Inability to trace a single action across Archon, worker, and reviewer.
+Privileged control-plane actions can be accepted without identity.
 
 Acceptance criteria:
 
-- Every inbound request gets a request ID if one is not already present and trusted.
-- Request IDs propagate across Archon, worker, reviewer, and internal callback paths.
-- Request IDs are included in responses, logs, and audit records where appropriate.
-- Integration tests verify end-to-end propagation.
+- All protected Archon routes reject missing credentials with `401`.
+- Invalid or revoked credentials return `401`.
+- Valid credentials with wrong scope return `403`.
+- No code path treats network locality as trust.
+- Startup fails in non-dev mode when required auth configuration is missing.
+- Protected and public health behavior is explicit and documented.
 
-Non-goals:
+Depends on:
 
-- Full distributed tracing platform rollout.
+- Stories EH-01 and EH-02.
 
-Dependencies:
-
-- Epic 1 complete enough to identify callers.
-
-### Story 2.2: Implement structured logging for privileged and security-critical events
+### Story EH-A2: Protect runner ingress and manual execution endpoints
 
 Problem reduced:
-Poor incident reconstruction and weak machine-readable telemetry.
+`/run-once` and manual trigger paths remain callable without scoped authorization.
 
 Acceptance criteria:
 
-- Logs are emitted in a defined structured format.
-- Required fields include timestamp, service, environment, request ID, caller identity, action, outcome, and error classification.
-- Auth failures, authz denials, config failures, and privileged actions are logged.
-- Secrets and sensitive payloads are redacted by policy.
-- Logging schema and examples are documented.
+- `POST /work/run` and `POST /reviews/run` are protected and scoped.
+- `POST /run-once` on worker and reviewer are protected and scoped.
+- Runner ingress accepts only explicitly allowed service identities.
+- Missing, invalid, and wrong-scope requests are rejected and minimally audited.
+- Negative tests cover all runner ingress paths.
 
-Non-goals:
+Depends on:
 
-- Dashboarding or SIEM integration.
+- Stories EH-01 and EH-02.
 
-Dependencies:
-
-- Story 2.1.
-
-### Story 2.3: Standardize error classification and operator diagnostics
+### Story EH-A3: Introduce per-caller credentials and remove unauthenticated internal trust
 
 Problem reduced:
-Operators cannot distinguish malicious traffic from system failure.
+The system relies on implicit internal trust instead of explicit caller identity.
 
 Acceptance criteria:
 
-- Errors are categorized consistently across services: `auth`, `authz`, `validation`, `dependency`, `internal`.
-- Logs include actionable reason codes without leaking secrets.
-- Diagnostics can distinguish caller fault from platform fault.
-- Tests verify key error cases emit the expected class and code.
+- Distinct credentials exist for `archon`, `worker`, `reviewer`, `mcp`, `operator`, and `readonly`.
+- Worker, reviewer, and MCP clients attach credentials on all Archon calls.
+- Archon-to-runner calls attach credentials on runner ingress requests.
+- Bootstrap, compose wiring, smoke tests, validation scripts, and README command examples are updated to use the new model.
+- Rotation and revocation behavior is documented for Release A.
 
-Non-goals:
+Depends on:
 
-- Advanced observability workflows.
+- Stories EH-01 and EH-A1.
 
-Dependencies:
+### Story EH-A4: Authenticate, authorize, trace, and audit Archon MCP tool calls
 
-- Stories 2.1 and 2.2.
+Problem reduced:
+MCP remains a privileged but ambiguously governed mutation path.
 
-## Epic 3: Durable Audit Trail and Accountability
+Acceptance criteria:
+
+- MCP has its own service identity and allowed-scope set.
+- Each mutating MCP tool is mapped to an allowed Archon action.
+- MCP tool calls propagate a request ID into Archon.
+- Every mutating MCP tool call emits minimal audit evidence with actor, action, target, outcome, and request ID.
+- Wrong-scope and unauthenticated MCP calls are rejected and audited.
+
+Depends on:
+
+- Stories EH-01, EH-02, and EH-A3.
+
+### Story EH-A5: Define and protect operator versus readonly flows
+
+Problem reduced:
+Manual usage paths remain over-privileged or undefined.
+
+Acceptance criteria:
+
+- `operator` and `readonly` identities are distinct.
+- Mutating commands require `operator`.
+- Read/list endpoints that remain accessible to `readonly` are explicitly listed in the scope matrix.
+- README examples specify which identity is required for each operator command.
+
+Depends on:
+
+- Stories EH-02 and EH-A3.
+
+## Epic 2: Release A Traceability, Minimal Audit, and Raw Output Control
 
 Outcome:
-Security-relevant actions produce durable, queryable audit records with actor, action, target, time, and outcome.
+Release A actions are attributable, minimally auditable, and do not leak raw model output by default.
 
-### Story 3.1: Define the audit event schema
+### Story EH-A6: Generate and propagate request IDs across Archon, MCP, and runners
 
 Problem reduced:
-Current audit records are too shallow for enterprise investigation and accountability.
+A single privileged action cannot be traced across services.
 
 Acceptance criteria:
 
-- Schema includes actor identity, actor type, action, target/resource, request ID, timestamp, outcome, and reason.
-- Required audited events are enumerated: auth failures, authz denials, task claims/releases, worker runs, reviews, approvals, privileged config changes, retention/purge operations.
-- Schema versioning strategy is defined.
-- Team signoff confirms the schema supports incident review.
+- A canonical request ID header and generation rule are defined.
+- Archon creates a request ID if one is absent or untrusted.
+- MCP and runner calls propagate the active request ID.
+- Request IDs appear in responses, logs, and minimal audit records where relevant.
+- Negative tests cover malformed or untrusted inbound request IDs.
 
-Non-goals:
+Depends on:
 
-- SIEM export.
+- Story EH-A3.
 
-Dependencies:
-
-- Epic 2 request identity and correlation fields.
-
-### Story 3.2: Persist audit events durably
+### Story EH-A7: Add minimal auth/authz audit substrate in Release A
 
 Problem reduced:
-Audit evidence disappears with process restarts or transient log sinks.
+Release A requires deny decisions to be auditable, but durable audit was previously deferred too late.
 
 Acceptance criteria:
 
-- Audit events are stored durably, not only emitted to stdout.
-- Failed audit writes surface operationally and are handled explicitly.
-- Audit storage survives restarts.
-- Query access exists for time, actor, action, resource, and request ID.
+- Minimal audit records exist for auth failures, authz denials, task mutations, review mutations, approval mutations, MCP mutations, and manual run triggers.
+- The minimal schema includes timestamp, request ID, actor identity, action, target, outcome, and deny reason where applicable.
+- Audit requirements do not create a dependency loop that blocks auth success when the durable audit system is not yet implemented.
+- Release A tests assert minimal audit presence for critical paths.
 
-Non-goals:
+Depends on:
 
-- Replacing all storage layers.
+- Stories EH-A1 through EH-A4 and EH-A6.
 
-Dependencies:
-
-- Story 3.1.
-
-### Story 3.3: Ensure audit completeness for privileged workflows
+### Story EH-A8: Control raw model output persistence before telemetry expansion
 
 Problem reduced:
-Critical paths can execute without accountable evidence.
+Sensitive model output is stored in `worker_runs.raw_output` and `reviews.raw_output` by default or without bounds.
 
 Acceptance criteria:
 
-- Every privileged endpoint and workflow emits audit records on success and on denial/failure where appropriate.
-- Missing audit coverage is test-detectable.
-- Integration tests validate emitted audit records for core workflows.
-- Audit data can reconstruct approval and review flows.
+- `raw_output` is default-off in Release A.
+- Any opt-in storage mode is explicit, documented, and limited to allowed operators.
+- Maximum size, truncation behavior, and redaction policy are defined.
+- Existing rows and migration behavior are explicitly addressed.
+- Tests cover empty, typical, large, truncated, secret-containing, and malformed output cases.
 
-Non-goals:
+Depends on:
 
-- Full tamper-evidence chain outside documented scope.
+- Stories EH-00 and EH-03.
 
-Dependencies:
-
-- Stories 3.1 and 3.2.
-
-### Story 3.4: Add audit retention and export controls
+### Story EH-A9: Add structured error classification for security-critical paths
 
 Problem reduced:
-Audit data lacks governance and operational extraction paths.
+Operators cannot tell auth failure, authz failure, validation failure, and system failure apart.
 
 Acceptance criteria:
 
-- Audit retention period is explicit, configurable, and documented.
-- Export path exists for incident review and compliance needs.
-- Export and retention-changing actions are themselves restricted and audited.
+- Security-critical paths classify errors as `auth`, `authz`, `validation`, `dependency`, or `internal`.
+- Error logs and audit records include machine-readable reason codes.
+- Sensitive data is never included in error output.
 
-Non-goals:
+Depends on:
 
-- Full external compliance platform integration.
+- Stories EH-A6 and EH-A7.
 
-Dependencies:
-
-- Story 3.2.
-
-## Epic 4: Data Retention, Privacy, and Safe Defaults
+## Epic 3: Release A Operator and Validation Migration
 
 Outcome:
-The system stops retaining sensitive operational data indefinitely or by accident.
+The hardened Release A path is usable and verifiable, not just theoretically secure.
 
-### Story 4.1: Inventory retained data by type and purpose
+### Story EH-A10: Migrate operator commands, docs, and scripts to authenticated mode
 
 Problem reduced:
-Unknown retained data creates unmanaged compliance and security risk.
+Auth hardening breaks README workflows, curl examples, or scripts and drives teams back to insecure bypasses.
 
 Acceptance criteria:
 
-- Stored data classes are documented: logs, audits, tokens/metadata, task payloads, findings, approvals, artifacts.
-- Each class has an owner, purpose, and retention recommendation.
-- Unknown or unowned retained data is flagged for removal or policy definition.
+- Operator curl examples use authenticated flows.
+- Health, smoke test, and live validation commands are updated for protected versus public endpoints.
+- Bootstrap steps document how each identity receives credentials in local/staging use.
+- README and planning docs reference only files present on the PR branch or clearly mark future deliverables.
 
-Non-goals:
+Depends on:
 
-- Customer-specific policy customization.
+- Stories EH-A1 through EH-A5.
 
-Dependencies:
-
-- None, but should align with Epic 3 schema design.
-
-### Story 4.2: Set explicit retention defaults for logs and audit data
+### Story EH-A11: Define Release A validation matrix and exit criteria
 
 Problem reduced:
-Indefinite retention by default.
+Release A approval is based on aspiration rather than measurable evidence.
 
 Acceptance criteria:
 
-- Default retention is finite and environment-specific.
-- Retention settings are configurable without code changes.
-- Expiration and cleanup behavior is documented and tested.
-- Dangerous or unbounded defaults require explicit override.
+- Release A exit criteria are explicit for Archon ingress, runner ingress, MCP, request ID propagation, minimal audit, raw output controls, and authenticated operator flows.
+- Each validation probe has owner, environment, command, expected result, and blocking/non-blocking status.
+- Staging-like smoke validation is part of Release A signoff.
 
-Non-goals:
+Depends on:
 
-- Long-term archival redesign.
+- Stories EH-A6 through EH-A10.
 
-Dependencies:
-
-- Story 4.1 and audit persistence decisions from Epic 3.
-
-### Story 4.3: Minimize sensitive data in logs and stored artifacts
-
-Problem reduced:
-Secret and sensitive data leakage through telemetry and stored outputs.
-
-Acceptance criteria:
-
-- Tokens, secrets, and clearly sensitive payload fields are redacted or excluded.
-- Logging and audit helpers prevent accidental raw-secret emission in known paths.
-- Representative redaction tests exist.
-
-Non-goals:
-
-- Broad prompt-governance framework.
-
-Dependencies:
-
-- Epic 2 structured logging and Epic 3 audit schema.
-
-### Story 4.4: Add operator controls for retention and purge workflows
-
-Problem reduced:
-Retention operations are opaque and potentially unsafe.
-
-Acceptance criteria:
-
-- Authorized operators can adjust retention within defined bounds.
-- Purge and cleanup operations are logged and audited.
-- Unsafe “keep forever” defaults are removed.
-- Dry-run mode exists before destructive purge execution.
-
-Non-goals:
-
-- Customer self-service retention UI.
-
-Dependencies:
-
-- Stories 4.1 through 4.3.
-
-## Epic 5: Automated Verification and Security Regression Coverage
+## Epic 4: Durable Audit and Schema Migration
 
 Outcome:
-Security-critical controls are enforced continuously rather than assumed.
+Audit becomes durable, queryable, and migration-safe.
 
-### Story 5.1: Build an auth and authorization automated test suite
+### Story EH-B1: Implement the durable audit schema on top of versioned migrations
 
 Problem reduced:
-Fail-closed and least-privilege controls regress silently.
+Audit persistence lands without schema control or upgrade discipline.
 
 Acceptance criteria:
 
-- Automated tests cover fail-closed behavior, service identity separation, and scope enforcement.
-- Tests run in CI.
-- Auth regressions block merge.
-- Negative-path scenarios are first-class, not optional.
+- Durable audit schema changes use the versioned migration framework from EH-03.
+- Required durable fields include actor identity, actor type, request ID, action, target, outcome, reason, and timestamp.
+- Forward migration, idempotent rerun, and rollback/restore behavior are tested.
 
-Non-goals:
+Depends on:
 
-- High-volume performance testing.
+- Stories EH-03 and EH-A7.
 
-Dependencies:
-
-- Epic 1.
-
-### Story 5.2: Add integration tests for end-to-end request traceability
+### Story EH-B2: Persist durable audit records and expose restricted query paths
 
 Problem reduced:
-Traceability controls appear correct but break across service boundaries.
+Minimal audit exists but cannot support real incident review.
 
 Acceptance criteria:
 
-- CI validates request ID propagation across control plane, reviewer, and worker.
-- Tests assert logs and audit records can be correlated for a sample workflow.
-- Test failures are diagnosable from artifacts.
+- Durable audit survives restarts.
+- Query paths exist for time, actor, action, target, and request ID.
+- Access to audit query/export is itself protected and audited.
+- Failure behavior is defined when durable audit persistence is degraded.
 
-Non-goals:
+Depends on:
 
-- Full chaos testing.
+- Story EH-B1.
 
-Dependencies:
-
-- Epic 2 and at least partial Epic 3.
-
-### Story 5.3: Add audit coverage tests for privileged workflows
+### Story EH-B3: Enforce audit completeness for privileged workflows
 
 Problem reduced:
-New or changed privileged flows ship without audit evidence.
+Critical paths still ship without durable evidence.
 
 Acceptance criteria:
 
-- Core privileged actions assert audit record presence and schema correctness.
-- Denied actions are covered too.
-- Coverage includes happy path and failure path.
+- Archon, MCP, runner manual triggers, task transitions, review writes, and approvals have durable audit coverage.
+- Missing audit coverage is detectable in tests.
+- Audit completeness is validated for success and deny paths.
 
-Non-goals:
+Depends on:
 
-- External compliance reporting.
+- Story EH-B2.
 
-Dependencies:
-
-- Epic 3.
-
-### Story 5.4: Raise the CI quality gate from smoke-only to control validation
-
-Problem reduced:
-Pipeline passes without validating the controls that matter.
-
-Acceptance criteria:
-
-- CI runs unit and integration tests for auth, traceability, and audit controls.
-- Minimum required checks are documented.
-- Merge policy blocks shipping when critical security checks fail.
-
-Non-goals:
-
-- Large-scale browser automation.
-
-Dependencies:
-
-- Stories 5.1 through 5.3.
-
-## Epic 6: Operational Readiness and Security Runbooks
+## Epic 5: Data Retention and Privacy Controls
 
 Outcome:
-The team can rotate credentials, investigate incidents, and verify production readiness repeatably.
+Stored data classes are governed explicitly and safely.
 
-### Story 6.1: Create the auth and credential rotation runbook
+### Story EH-B4: Inventory retained data and assign owners and purpose
 
 Problem reduced:
-Credential incidents require improvised recovery.
+Retention policy is written without a real data inventory.
 
 Acceptance criteria:
 
-- Runbook covers provisioning, rotation, revocation, and recovery for service identities.
-- Procedure is exercised in a non-prod environment.
-- Expected runtime behavior during rotation/revocation is documented.
+- Inventory includes logs, minimal audit, durable audit, `raw_output`, task descriptions, metadata, findings, follow-up, approval notes, and validation artifacts.
+- Each data class has owner, purpose, and retention recommendation.
 
-Non-goals:
+Depends on:
 
-- Full self-service credential portal.
+- Story EH-00.
 
-Dependencies:
-
-- Epic 1 complete enough to define identities.
-
-### Story 6.2: Create the incident investigation runbook using request IDs and audit data
+### Story EH-B5: Define retention defaults and purge behavior
 
 Problem reduced:
-Incident response depends on tribal knowledge.
+Retention remains indefinite or inconsistent across data classes.
 
 Acceptance criteria:
 
-- Runbook explains how to trace a request across services.
-- Includes steps for investigating auth failures, unauthorized attempts, and suspicious privileged activity.
-- Validated against a staged incident scenario.
+- Finite defaults are defined for each data class unless explicitly justified otherwise.
+- Purge behavior, dry-run mode, and operator controls are documented.
+- Tests cover policy parsing, purge selection, and retention differences between audit and `raw_output`.
 
-Non-goals:
+Depends on:
 
-- Formal SOC integration.
+- Stories EH-B1, EH-B4, and EH-A8.
 
-Dependencies:
+## Epic 6: CI Security Validation Gates
 
-- Epics 2 and 3.
+Outcome:
+The security model is enforced continuously by real pipelines.
 
-### Story 6.3: Define the production readiness checklist for control-plane security
+### Story EH-C1: Create or reconcile the CI baseline for this hardening path
 
 Problem reduced:
-Security-critical deployments ship without a consistent gate.
+The plan refers to CI gates without proving whether the required pipeline exists in this PR/repo context.
 
 Acceptance criteria:
 
-- Checklist includes fail-closed auth verification, unique service identities, request traceability, audit durability, retention settings, and CI gates.
-- Checklist is required before production-like deployments.
+- The planning set states whether CI is being created or enhanced for this path.
+- Required jobs are listed explicitly.
+- Cross-links reference only CI workflows present in the repo or created by the future implementation story.
+
+Depends on:
+
+- Story EH-00.
+
+### Story EH-C2: Add blocking security validation gates
+
+Problem reduced:
+Critical regressions can merge without exercising auth, MCP, runner ingress, migration, or raw output behavior.
+
+Acceptance criteria:
+
+- CI gates cover unauthenticated and wrong-scope failures on Archon, MCP, and runner ingress paths.
+- CI gates cover request ID propagation, minimal audit assertions, migration tests, and raw output regression tests.
+- Blocking versus informational jobs are defined explicitly.
+
+Depends on:
+
+- Stories EH-A11, EH-B1, EH-A8, and EH-C1.
+
+## Epic 7: Runbooks, Rollout, and Readiness
+
+Outcome:
+The hardened path can be rolled out, rotated, investigated, and restored safely.
+
+### Story EH-C3: Create rollout and rollback runbooks for the hardened path
+
+Problem reduced:
+Security controls exist but adoption is unsafe or manual rollback is undefined.
+
+Acceptance criteria:
+
+- Runbooks cover bootstrap, rollout, validation, rollback, and restore where rollback is not supported.
+- Irreversible migration and credential-change boundaries are identified.
+- Staging execution of the runbooks is part of signoff.
+
+Depends on:
+
+- Stories EH-A10, EH-A11, and EH-B1.
+
+### Story EH-C4: Create credential rotation and incident investigation runbooks
+
+Problem reduced:
+Operators cannot safely rotate service credentials or investigate suspicious activity.
+
+Acceptance criteria:
+
+- Runbooks cover provisioning, rotation, revocation, and incident tracing with request IDs and audit records.
+- The procedures are exercised in a staging-like environment.
+
+Depends on:
+
+- Stories EH-A3, EH-A6, and EH-B2.
+
+### Story EH-C5: Publish the production readiness checklist
+
+Problem reduced:
+Teams deploy without a consistent gate for the hardened control plane.
+
+Acceptance criteria:
+
+- Checklist includes ingress protection, scope enforcement, MCP coverage, request ID propagation, minimal and durable audit, raw output controls, retention settings, CI gates, and runbook validation.
 - Ownership is explicit.
 
-Non-goals:
+Depends on:
 
-- Enterprise-wide governance framework.
+- Epics 1 through 7 materially complete.
 
-Dependencies:
+## Risk Reduction Mapping
 
-- Epics 1 through 5 materially complete.
+| Risk | Primary stories |
+|---|---|
+| Unauthenticated access | EH-A1, EH-A2, EH-A3, EH-A4 |
+| Over-broad privilege | EH-02, EH-A4, EH-A5 |
+| No traceability | EH-A6, EH-A7, EH-A11 |
+| No auditability | EH-A7, EH-B1, EH-B2, EH-B3 |
+| Sensitive output leakage | EH-A8, EH-B4, EH-B5 |
+| Unsafe rollout | EH-A10, EH-A11, EH-C3, EH-C4 |
+| Migration breakage | EH-03, EH-B1, EH-C3 |
+| False CI confidence | EH-C1, EH-C2 |
+
+## Non-Goals for Release A
+
+- broad human RBAC or ABAC
+- SIEM, SOC, or dashboard-first observability work
+- PostgreSQL migration as a prerequisite
+- large-scale performance or chaos testing
+- enterprise-wide documentation refresh outside authenticated control-plane flows
 
 ## Cross-Epic Definition of Done
 
-A story is not ready for review unless all of the following are true:
+A story is not ready for review unless:
 
-- Acceptance criteria are met.
-- Negative-path tests exist where auth, authz, retention, or audit behavior changed.
-- Any schema or config migration has a tested compatibility or rollback path.
-- Logs, request IDs, and audit assertions are present for privileged flows when relevant.
-- CI required checks are green and not waived.
+- acceptance criteria are met with at least one negative-path case for auth, trust, output, or migration stories
+- dependencies and out-of-scope items are explicit
+- tests are identified by level: unit, integration, migration, or ops validation
+- repo-truth assumptions are explicit and accurate
+- CI status expectations are documented as create versus enhance, not implied
 
-## Explicitly Deferred
-
-These are intentionally later-phase items, not first-wave backlog starters:
-
-- Broad human RBAC/ABAC expansion
-- External enterprise IAM breadth
-- SIEM and SOC integrations
-- Dashboard-first observability work
-- PostgreSQL migration as an initial prerequisite
-- Large-scale performance and chaos engineering
-- Multi-region or advanced scaling design
-
-## Notes for the Dev Team
-
-- Implement vertically, not horizontally: ingress auth, then service authz, then trace propagation, then audit, then retention, then CI gate enforcement.
-- Do not split “code now, tests later.”
-- Do not treat operational logs and audit records as the same artifact. They serve different operators and different failure modes.
