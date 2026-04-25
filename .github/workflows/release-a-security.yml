@@ -1,0 +1,38 @@
+name: Release A security gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - enterprise-hardening-release-a
+
+jobs:
+  release-a-security:
+    name: Release A fail-closed authz/raw-output/audit/runner gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/archon-control-plane/requirements.txt -r services/openclaw-runtime/requirements.txt pytest httpx
+
+      - name: Compile Release A Python services
+        run: |
+          python -m py_compile \
+            services/archon-control-plane/app.py \
+            services/openclaw-runtime/runner_common.py \
+            services/openclaw-runtime/worker_loop.py \
+            services/openclaw-runtime/review_loop.py \
+            services/archon-mcp/server.py
+
+      - name: Run Release A security tests
+        run: python -m pytest -q tests/test_release_a_security.py
