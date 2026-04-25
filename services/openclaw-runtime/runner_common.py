@@ -4,17 +4,27 @@ import json
 import os
 import re
 import subprocess
+import time
+import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
 from urllib import request
 from zoneinfo import ZoneInfo
 
 ARCHON_API_BASE_URL = os.getenv("ARCHON_API_BASE_URL", "http://archon:8080")
+ARCHON_API_TOKEN = os.getenv("ARCHON_API_TOKEN", "")
+ARCHON_API_TOKEN_FILE = os.getenv("ARCHON_API_TOKEN_FILE", "")
+ARCHON_AUTH_CONFIG_FILE = os.getenv("ARCHON_AUTH_CONFIG_FILE", "/home/node/.openclaw/archon-auth.json")
+ARCHON_HTTP_RETRIES = max(1, int(os.getenv("ARCHON_HTTP_RETRIES", "4")))
+ARCHON_HTTP_RETRY_BACKOFF = float(os.getenv("ARCHON_HTTP_RETRY_BACKOFF", "0.35"))
 OPENCLAW_BIN = os.getenv("OPENCLAW_BIN", "openclaw")
 OPENCLAW_STATE_DIR = Path(os.getenv("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
 OPENCLAW_WORKSPACE_DIR = os.getenv("OPENCLAW_WORKSPACE_DIR", "/workspace")
+REQUEST_ID_HEADER = "X-Request-ID"
 
 
 @dataclass
@@ -26,20 +36,134 @@ class OpenClawResult:
     command: list[str]
 
 
-def archon_get(path: str) -> dict[str, Any]:
-    with request.urlopen(f"{ARCHON_API_BASE_URL}{path}", timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+@dataclass(frozen=True)
+class RunnerPrincipal:
+    key_id: str
+    identity: str
+    scopes: frozenset[str]
 
 
-def archon_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    req = request.Request(
-        f"{ARCHON_API_BASE_URL}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def _load_archon_token() -> str:
+    if ARCHON_API_TOKEN:
+        return ARCHON_API_TOKEN.strip()
+    if ARCHON_API_TOKEN_FILE:
+        try:
+            return Path(ARCHON_API_TOKEN_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return ""
+
+
+def _archon_headers() -> dict[str, str]:
+    token = _load_archon_token()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def create_request_id(value: str | None = None) -> str:
+    if value:
+        text = value.strip()
+        if text and len(text) <= 128 and not any(ch.isspace() for ch in text):
+            return text
+    return uuid.uuid4().hex
+
+
+def _archon_should_retry(exc: BaseException, status: int | None) -> bool:
+    if status is not None:
+        return status in {408, 425, 429, 500, 502, 503, 504}
+    return isinstance(exc, (urlerror.URLError, TimeoutError, OSError))
+
+
+def _archon_request(
+    *,
+    method: str,
+    path: str,
+    body: bytes | None,
+    timeout: float,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    last_exc: BaseException | None = None
+    for attempt in range(ARCHON_HTTP_RETRIES):
+        req = request.Request(
+            f"{ARCHON_API_BASE_URL}{path}",
+            data=body,
+            headers=(
+                {REQUEST_ID_HEADER: create_request_id(request_id), "Content-Type": "application/json", **_archon_headers()}
+                if body is not None
+                else {REQUEST_ID_HEADER: create_request_id(request_id), **_archon_headers()}
+            ),
+            method=method,
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw.strip() else {}
+        except urlerror.HTTPError as exc:
+            last_exc = exc
+            status = exc.code
+            if not _archon_should_retry(exc, status) or attempt == ARCHON_HTTP_RETRIES - 1:
+                raise
+        except Exception as exc:  # noqa: BLE001 — retry boundary for transient network failures
+            last_exc = exc
+            if not _archon_should_retry(exc, None) or attempt == ARCHON_HTTP_RETRIES - 1:
+                raise
+        delay = ARCHON_HTTP_RETRY_BACKOFF * (2**attempt)
+        time.sleep(delay)
+    raise RuntimeError(f"archon request failed after {ARCHON_HTTP_RETRIES} attempts: {last_exc!r}")
+
+
+def archon_get(path: str, *, request_id: str | None = None) -> dict[str, Any]:
+    return _archon_request(method="GET", path=path, body=None, timeout=30.0, request_id=request_id)
+
+
+def archon_post(path: str, payload: dict[str, Any], *, request_id: str | None = None) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    return _archon_request(method="POST", path=path, body=body, timeout=60.0, request_id=request_id)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _load_auth_config() -> dict[str, Any]:
+    path = Path(ARCHON_AUTH_CONFIG_FILE)
+    if not path.exists():
+        raise RuntimeError(f"auth config missing: {path}")
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise RuntimeError(f"auth config empty: {path}")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise RuntimeError("auth config must be a JSON object")
+    credentials = payload.get("credentials")
+    if not isinstance(credentials, list):
+        raise RuntimeError("auth config missing credentials list")
+    return payload
+
+
+def authenticate_runner_bearer(token: str, *, allowed_identity: str) -> RunnerPrincipal:
+    if not token:
+        raise RuntimeError("missing bearer token")
+    payload = _load_auth_config()
+    hashed = _hash_token(token)
+    for item in payload.get("credentials", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("token_hash") or "") != hashed:
+            continue
+        if str(item.get("state") or "") not in {"active", "next"}:
+            raise RuntimeError("token not active")
+        identity = str(item.get("identity") or "")
+        if identity != allowed_identity:
+            raise RuntimeError(f"identity mismatch: {identity}")
+        scopes = item.get("scopes") or []
+        return RunnerPrincipal(
+            key_id=str(item.get("key_id") or ""),
+            identity=identity,
+            scopes=frozenset(scope for scope in scopes if isinstance(scope, str)),
+        )
+    raise RuntimeError("invalid token")
 
 
 def run_openclaw_command(*args: str, timeout_seconds: int) -> OpenClawResult:

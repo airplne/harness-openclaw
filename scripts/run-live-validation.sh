@@ -4,23 +4,31 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ ! -f .env ]]; then
-  echo "[validate] missing .env; run 'bash scripts/bootstrap.sh' first" >&2
-  exit 1
+ARCHON_PORT="${ARCHON_PORT:-8080}"
+OPENCLAW_WORKER_MODEL="${OPENCLAW_WORKER_MODEL:-ollama/llama3.1:8b}"
+OPENCLAW_REVIEW_MODEL="${OPENCLAW_REVIEW_MODEL:-openai-codex/gpt-5.4}"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}"
+ARCHON_API_TOKEN_PATH="${ARCHON_API_TOKEN_PATH:-$OPENCLAW_CONFIG_DIR/operator.token}"
+ARCHON_API_TOKEN=""
+if [[ -f "$ARCHON_API_TOKEN_PATH" ]]; then
+  ARCHON_API_TOKEN="$(cat "$ARCHON_API_TOKEN_PATH" | tr -d '\n')"
 fi
-
-set -a
-source .env
-set +a
+AUTH_HEADER=()
+if [[ -n "${ARCHON_API_TOKEN}" ]]; then
+  AUTH_HEADER=(-H "Authorization: Bearer ${ARCHON_API_TOKEN}")
+fi
 
 OUT_DIR=".data/validation/latest"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 echo "[validate] collecting health"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/health" | python3 -m json.tool > "$OUT_DIR/archon-health.json"
-docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/health | python3 -m json.tool > "$OUT_DIR/worker-health.json"
-docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/health | python3 -m json.tool > "$OUT_DIR/reviewer-health.json"
+curl -fsS "http://localhost:${ARCHON_PORT}/healthz" | python3 -m json.tool > "$OUT_DIR/archon-health.json"
+curl -fsS "http://localhost:${ARCHON_PORT}/readyz" | python3 -m json.tool > "$OUT_DIR/archon-ready.json"
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/healthz | python3 -m json.tool > "$OUT_DIR/worker-health.json"
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/readyz | python3 -m json.tool > "$OUT_DIR/worker-ready.json"
+docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/healthz | python3 -m json.tool > "$OUT_DIR/reviewer-health.json"
+docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/readyz | python3 -m json.tool > "$OUT_DIR/reviewer-ready.json"
 docker compose run --rm openclaw-cli gateway health --url ws://127.0.0.1:18789 --json > "$OUT_DIR/gateway-health.json"
 
 echo "[validate] verifying renderer scrub behavior"
@@ -114,11 +122,11 @@ echo "[validate] running smoke test"
 bash scripts/run-smoke-test.sh | tee "$OUT_DIR/smoke-test.log"
 
 echo "[validate] capturing persisted state"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/tasks" | python3 -m json.tool > "$OUT_DIR/tasks.json"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/claims" | python3 -m json.tool > "$OUT_DIR/claims.json"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/worker-runs" | python3 -m json.tool > "$OUT_DIR/worker-runs.json"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/reviews" | python3 -m json.tool > "$OUT_DIR/reviews.json"
-curl -fsS "http://localhost:${ARCHON_PORT:-8080}/approvals" | python3 -m json.tool > "$OUT_DIR/approvals.json"
+curl -fsS "${AUTH_HEADER[@]}" "http://localhost:${ARCHON_PORT}/tasks" | python3 -m json.tool > "$OUT_DIR/tasks.json"
+curl -fsS "${AUTH_HEADER[@]}" "http://localhost:${ARCHON_PORT}/claims" | python3 -m json.tool > "$OUT_DIR/claims.json"
+curl -fsS "${AUTH_HEADER[@]}" "http://localhost:${ARCHON_PORT}/worker-runs" | python3 -m json.tool > "$OUT_DIR/worker-runs.json"
+curl -fsS "${AUTH_HEADER[@]}" "http://localhost:${ARCHON_PORT}/reviews" | python3 -m json.tool > "$OUT_DIR/reviews.json"
+curl -fsS "${AUTH_HEADER[@]}" "http://localhost:${ARCHON_PORT}/approvals" | python3 -m json.tool > "$OUT_DIR/approvals.json"
 docker compose ps --format json > "$OUT_DIR/compose-ps.json"
 
 echo "[validate] wrote artifacts to $OUT_DIR"

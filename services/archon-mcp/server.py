@@ -4,11 +4,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
+from pathlib import Path
 from typing import Any
 from urllib import request
 from urllib.parse import urlencode
 
 ARCHON_API_BASE_URL = os.getenv("ARCHON_API_BASE_URL", "http://archon:8080")
+ARCHON_API_TOKEN = os.getenv("ARCHON_API_TOKEN", "")
+ARCHON_API_TOKEN_FILE = os.getenv("ARCHON_API_TOKEN_FILE", "")
+REQUEST_ID_HEADER = "X-Request-ID"
+MCP_SCOPE_HEADER = "X-Archon-Tool-Scope"
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -115,36 +121,60 @@ def _json_error(message_id: Any, code: int, text: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": text}}
 
 
-def _get(path: str) -> dict[str, Any]:
-    with request.urlopen(f"{ARCHON_API_BASE_URL}{path}", timeout=30) as resp:
+def _get(path: str, *, tool_scope: str | None = None) -> dict[str, Any]:
+    token = _load_archon_token()
+    headers = {REQUEST_ID_HEADER: uuid.uuid4().hex}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if tool_scope:
+        headers[MCP_SCOPE_HEADER] = tool_scope
+    req = request.Request(f"{ARCHON_API_BASE_URL}{path}", headers=headers, method="GET")
+    with request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _post(path: str, payload: dict[str, Any], *, tool_scope: str | None = None) -> dict[str, Any]:
+    token = _load_archon_token()
+    headers = {"Content-Type": "application/json", REQUEST_ID_HEADER: uuid.uuid4().hex}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if tool_scope:
+        headers[MCP_SCOPE_HEADER] = tool_scope
     req = request.Request(
         f"{ARCHON_API_BASE_URL}{path}",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _load_archon_token() -> str:
+    if ARCHON_API_TOKEN:
+        return ARCHON_API_TOKEN.strip()
+    if ARCHON_API_TOKEN_FILE:
+        try:
+            return Path(ARCHON_API_TOKEN_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return ""
+
+
 def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "archon_create_task":
-        data = _post("/tasks", arguments)
+        data = _post("/tasks", arguments, tool_scope=name)
     elif name == "archon_list_tasks":
         status = arguments.get("status")
         suffix = f"?{urlencode({'status': status})}" if status else ""
-        data = _get(f"/tasks{suffix}")
+        data = _get(f"/tasks{suffix}", tool_scope=name)
     elif name == "archon_transition_task":
         task_id = int(arguments["task_id"])
-        data = _post(f"/tasks/{task_id}/transition", {"status": arguments["status"], "notes": arguments.get("notes")})
+        data = _post(f"/tasks/{task_id}/transition", {"status": arguments["status"], "notes": arguments.get("notes")}, tool_scope=name)
     elif name == "archon_record_review":
-        data = _post("/reviews", arguments)
+        data = _post("/reviews", arguments, tool_scope=name)
     elif name == "archon_request_approval":
-        data = _post("/approvals", arguments)
+        data = _post("/approvals", arguments, tool_scope=name)
     else:
         raise KeyError(name)
     return {"content": [{"type": "text", "text": json.dumps(data)}], "isError": False}
