@@ -11,10 +11,6 @@
     "lastTouchedAt": "2026-04-08T23:46:09.514Z"
   },
   "gateway": {
-    "auth": {
-      "mode": "token",
-      "token": "95fe6dd47b13836fae2c31c17edf3722b1b397bbf26dbdbe"
-    },
     "controlUi": {
       "allowedOrigins": [
         "http://localhost:18789",
@@ -26,7 +22,7 @@
     "defaults": {
       "workspace": "/workspace",
       "model": {
-        "primary": "ollama/qwen3-coder:latest"
+        "primary": "ollama/llama3.1:8b"
       },
       "heartbeat": {
         "every": "5m",
@@ -42,8 +38,8 @@
         "api": "ollama",
         "models": [
           {
-            "id": "qwen3-coder:latest",
-            "name": "qwen3-coder:latest",
+            "id": "llama3.1:8b",
+            "name": "llama3.1:8b",
             "reasoning": false,
             "input": [
               "text"
@@ -69,7 +65,8 @@
           "/workspace/services/archon-mcp/server.py"
         ],
         "env": {
-          "ARCHON_API_BASE_URL": "http://archon:8080"
+          "ARCHON_API_BASE_URL": "http://archon:8080",
+          "ARCHON_API_TOKEN_FILE": "/home/node/.openclaw/mcp.token"
         }
       }
     }
