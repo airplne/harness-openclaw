@@ -1,86 +1,81 @@
-# ADR: Release A Credential Mechanism and Service Identity
+# ADR: Release A Credential Lifecycle and Service Identity
 
-Status: Proposed for backlog approval
-Date: 2026-04-24
+Status: Implemented  
+Date: 2026-04-25
 
 ## Decision
 
-Release A will use distinct opaque bearer service credentials with server-side metadata and file-based bootstrap for local and staging environments.
+Release A uses opaque bearer service credentials with hashed server-side metadata in `archon-auth.json`.
 
-This ADR intentionally chooses a simple mechanism for the first secure-by-default release instead of leaving the auth layer ambiguous.
+## Files and injection points
 
-## Why This Mechanism
+- Archon auth metadata: `./.data/openclaw-config/archon-auth.json`
+- Operator token: `./.data/openclaw-config/operator.token`
+- Worker token: `./.data/openclaw-config/worker.token`
+- Reviewer token: `./.data/openclaw-config/reviewer.token`
+- MCP token: `./.data/openclaw-config/mcp.token`
+- Readonly token: `./.data/openclaw-config/readonly.token`
+- Archon runner-ingress token: `./.data/openclaw-config/archon.token`
 
-Opaque bearer credentials are chosen because they are:
+Compose mounts these files read-only into the services that need them.
 
-- simple to bootstrap in a Docker Compose harness
-- easy to rotate independently by caller identity
-- compatible with current operator curl and script workflows
-- sufficient for Release A goals without forcing JWT, OIDC, or mTLS complexity into the first control-plane hardening release
+## Metadata contract
 
-## Identities Covered
+Each credential entry in `archon-auth.json` contains:
 
-Release A identities:
+- `key_id`
+- `identity`
+- `scopes`
+- `state`
+- `token_hash`
 
-- `archon`
+Plaintext bearer values are never stored in `archon-auth.json`. Bootstrap writes hashed metadata plus separate token files.
+
+## Supported identities
+
+- `operator`
 - `worker`
 - `reviewer`
 - `mcp`
-- `operator`
 - `readonly`
+- `archon`
 
-Each identity gets:
+## Credential states
 
-- one credential
-- one explicit scope set
-- independent rotation and revocation
+- `active`: accepted
+- `next`: accepted during rotation overlap
+- `retired`: rejected
+- `revoked`: rejected
 
-## Storage and Injection
+Rotation is implemented by publishing a new `next` credential, updating callers, then changing the old credential to `retired` or `revoked`.
 
-- Local and staging bootstrap may use file-mounted credential material.
-- Callers read credentials from explicit token files or equivalent explicit secret injection points.
-- No caller may rely on inherited trust from network location or container namespace.
+## Fail-closed behavior
 
-## Validation Model
+Archon startup fails closed when:
 
-For Release A, the server validates:
+- `ARCHON_AUTH_CONFIG_FILE` is missing
+- the file is empty
+- the file is unreadable
+- the file is malformed JSON
+- required identities do not have an `active` or `next` credential
 
-- credential presence
-- credential validity
-- credential revocation state
-- caller identity
-- caller scope against the route/tool scope matrix
+Runner ingress auth fails closed on missing or invalid runner credentials as well.
 
-Release A does not require self-describing JWT claims.
+## Reload model
 
-## Rotation and Revocation
+Release A uses startup load, not live reload. Credential changes require service restart or container restart to take effect.
 
-- Rotation uses an overlap window where new credentials are accepted before old credentials are revoked.
-- Revocation invalidates a single caller credential without forcing unrelated service restart beyond their own rotation path.
-- Rotation and revocation procedures must be documented in the rollout runbooks.
+## File permission expectations
 
-## Local Development
+Bootstrap writes credential material with owner-only read/write permissions. Compose mounts the config directory read-only where possible.
 
-- Local development may use explicit bootstrap-generated credentials.
-- Any insecure bypass must be opt-in, noisy, and disallowed in non-dev mode.
+## Scope enforcement
 
-## Deferred Alternatives
+Authorization is enforced by identity plus scope plus, for MCP, tool-specific scope headers and `mcp:<tool>` scopes.
 
-Deferred beyond Release A unless later stories intentionally promote them:
+## Non-goals in Release A
 
-- JWT or OIDC service tokens
+- JWT or OIDC claims
 - mTLS workload identity
-- external secret manager by default
-- full human SSO integration
-
-## Consequences
-
-Positive:
-
-- engineers can implement a consistent Release A auth model
-- acceptance criteria can use precise language: missing, invalid, revoked, wrong-scope
-
-Tradeoff:
-
-- audience and expiry claims are not first-release primitives unless later adopted intentionally
-
+- hot-reload credential rotation
+- external secret manager integration

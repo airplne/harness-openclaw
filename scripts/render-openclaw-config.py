@@ -9,24 +9,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-ENV_PATH = ROOT / ".env"
 CONTROLLED_TOP_LEVEL_KEYS = {"agents", "models", "mcp", "cronJobs"}
 FORBIDDEN_PATHS: tuple[tuple[str, ...], ...] = (
     ("agents", "defaults", "model", "fallbacks"),
     ("models", "providers", "ollama", "apiKey"),
+    ("gateway", "auth", "token"),
 )
-
-
-def load_env(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.strip().strip("'").strip('"')
-        os.environ.setdefault(key.strip(), value)
 
 
 def read_json(path: Path, *, strict: bool) -> dict[str, Any]:
@@ -81,6 +69,18 @@ def collect_passthrough(existing_configs: list[dict[str, Any]]) -> dict[str, Any
     return passthrough
 
 
+def scrub_secrets(payload: dict[str, Any]) -> None:
+    gateway = payload.get("gateway")
+    if not isinstance(gateway, dict):
+        return
+    auth = gateway.get("auth")
+    if not isinstance(auth, dict):
+        return
+    auth.pop("token", None)
+    if not auth:
+        gateway.pop("auth", None)
+
+
 def build_base_config(
     *,
     worker_model: str,
@@ -119,7 +119,10 @@ def build_base_config(
                 "archon": {
                     "command": "python3",
                     "args": ["/workspace/services/archon-mcp/server.py"],
-                    "env": {"ARCHON_API_BASE_URL": "http://archon:8080"},
+                    "env": {
+                        "ARCHON_API_BASE_URL": "http://archon:8080",
+                        "ARCHON_API_TOKEN_FILE": "/home/node/.openclaw/mcp.token",
+                    },
                 }
             }
         },
@@ -139,6 +142,7 @@ def build_config(repo_existing: dict[str, Any], runtime_existing: dict[str, Any]
             ollama_base_url=ollama_base_url,
         )
     )
+    scrub_secrets(config)
     assert_forbidden_paths_absent(config)
     return config
 
@@ -215,8 +219,6 @@ def main() -> int:
         help="Verify that an existing config file is scrubbed of deprecated keys.",
     )
     args = parser.parse_args()
-
-    load_env(ENV_PATH)
 
     if args.self_test:
         print(json.dumps(run_self_test(), indent=2))

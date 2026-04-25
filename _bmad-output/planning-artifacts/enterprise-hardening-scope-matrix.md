@@ -1,64 +1,76 @@
-# Secure-by-Default Control Plane Scope Matrix
+# Release A Scope and State Matrix
 
-Date: 2026-04-24
+Status: Implemented  
+Date: 2026-04-25
 
-## Identities
+## Health policy
 
-- `archon`
-- `worker`
-- `reviewer`
-- `mcp`
-- `operator`
-- `readonly`
-- `anonymous`
-
-`anonymous` is allowed only on explicitly public health endpoints if Release A keeps them public.
-
-## Archon Route Matrix
-
-| Route or action class | Allowed identities | Notes |
+| Endpoint | Access | Behavior |
 |---|---|---|
-| `GET /healthz` if public | `anonymous` | Optional public health only |
-| `GET /readyz` or protected health | `archon`, `operator`, `readonly` | Exact model decided in implementation |
-| `GET /tasks`, `GET /tasks/{id}`, `GET /worker-runs`, `GET /reviews`, `GET /approvals`, `GET /claims`, `GET /audit*` | `operator`, `readonly`, `mcp` where tool requires it | `mcp` access must be tool-scoped |
-| `POST /tasks` | `operator`, `mcp` | `mcp` only via `archon_create_task` scope |
-| `PATCH /tasks/{id}` | `operator` | Keep narrow unless later expanded intentionally |
-| `POST /tasks/{id}/transition` | `operator`, `worker`, `reviewer`, `mcp` | scoped by action type |
-| `POST /tasks/claim` | `worker`, `reviewer` | identity-specific claim scope |
-| `POST /tasks/{id}/release` | `worker`, `reviewer` | release only for owned claim type |
-| `POST /worker-runs` | `worker` | write-only for worker path |
-| `POST /reviews` | `reviewer`, `mcp` only if explicitly allowed | default keep narrow |
-| `POST /approvals` | `operator`, `mcp` only if explicitly allowed | approval mutation requires audit |
-| `POST /work/run` | `operator` | manual trigger path |
-| `POST /reviews/run` | `operator` | manual trigger path |
+| `GET /healthz` | anonymous | liveness only |
+| `GET /readyz` | anonymous | readiness only, no token/config contents |
+| `GET /health` | anonymous | temporary alias to `/healthz` for Release A |
+| `worker:/healthz`, `reviewer:/healthz` | anonymous | liveness |
+| `worker:/readyz`, `reviewer:/readyz` | anonymous | readiness |
+| `worker:/health`, `reviewer:/health` | anonymous | temporary alias to `/healthz` |
 
-## Runner Ingress Matrix
+## Archon route matrix
 
-| Endpoint | Allowed identities | Notes |
+| Route | Identity | Scope rule |
 |---|---|---|
-| `worker:/run-once` | `archon` | no direct anonymous or worker self-trigger by default |
-| `reviewer:/run-once` | `archon` | no direct anonymous or reviewer self-trigger by default |
-| `worker:/healthz` if public | `anonymous` | optional |
-| `reviewer:/healthz` if public | `anonymous` | optional |
+| `GET /tasks`, `GET /tasks/{id}` | `operator`, `readonly`, `worker`, `reviewer`, `mcp` | `tasks:read`; `mcp` also needs tool scope for list path |
+| `GET /claims` | `operator`, `readonly` | `claims:read` |
+| `GET /worker-runs` | `operator`, `readonly`, `worker` | `worker-runs:read` |
+| `GET /reviews` | `operator`, `readonly`, `reviewer` | `reviews:read` |
+| `GET /approvals` | `operator`, `readonly` | `approvals:read` |
+| `GET /audit` | `operator`, `readonly` | `audit:read` |
+| `POST /tasks` | `operator`, `mcp` | `tasks:create`; `mcp` also needs `X-Archon-Tool-Scope: archon_create_task` and `mcp:archon_create_task` |
+| `PATCH /tasks/{id}` | `operator` | `tasks:patch` |
+| `POST /tasks/claim` | `worker`, `reviewer` | identity-specific claim validation |
+| `POST /tasks/{id}/release` | `worker`, `reviewer` | authenticated claim owner only |
+| `POST /worker-runs` | `worker` | `worker` identity only, must own active worker claim |
+| `POST /reviews` | `reviewer`, `mcp` | reviewer must own review claim; `mcp` requires `reviews:create:mcp` plus tool scope |
+| `POST /approvals` | `operator`, `mcp` | `operator` needs `approvals:create`; `mcp` requires `approvals:create:mcp` plus tool scope |
+| `POST /work/run` | `operator` | `work:run` |
+| `POST /reviews/run` | `operator` | `reviews:run` |
 
-## MCP Tool Matrix
+## Runner ingress matrix
 
-| MCP tool | Underlying Archon action | Allowed identity | Audit required |
+| Endpoint | Identity | Scope |
+|---|---|---|
+| `worker:/run-once` | `archon` | `runner:invoke` |
+| `reviewer:/run-once` | `archon` | `runner:invoke` |
+
+## MCP tool mapping
+
+| Tool | Route | Required route scope | Required tool scope |
 |---|---|---|---|
-| `archon_create_task` | `POST /tasks` | `mcp` | yes |
-| `archon_list_tasks` | `GET /tasks` | `mcp` | read trace only |
-| `archon_transition_task` | `POST /tasks/{id}/transition` | `mcp` | yes |
-| `archon_record_review` | `POST /reviews` | `mcp` only if explicitly enabled | yes |
-| `archon_request_approval` | `POST /approvals` | `mcp` only if explicitly enabled | yes |
+| `archon_create_task` | `POST /tasks` | `tasks:create` | `mcp:archon_create_task` |
+| `archon_list_tasks` | `GET /tasks` | `tasks:read` | `mcp:archon_list_tasks` |
+| `archon_transition_task` | `POST /tasks/{id}/transition` | `tasks:transition:mcp` | `mcp:archon_transition_task` |
+| `archon_record_review` | `POST /reviews` | `reviews:create:mcp` | `mcp:archon_record_review` |
+| `archon_request_approval` | `POST /approvals` | `approvals:create:mcp` | `mcp:archon_request_approval` |
 
-## Negative Expectations
+## State and action matrix
 
-These are required failure cases in Release A:
+| Identity | Allowed action | Source status | Target status | Claim requirement |
+|---|---|---|---|---|
+| `worker` | claim worker task | `queued`, `needs_changes` | no status change | authenticated `key_id` becomes `claim_owner`, `claim_kind=worker` |
+| `worker` | transition | `queued`, `needs_changes` | `working` | must own active worker claim |
+| `worker` | release | any active worker claim | `review_requested`, `needs_changes`, `failed` | must own active worker claim |
+| `reviewer` | claim review task | `review_requested` | no status change | authenticated `key_id` becomes `claim_owner`, `claim_kind=review` |
+| `reviewer` | transition | `review_requested` | `reviewing` | must own active review claim |
+| `reviewer` | release | any active review claim | `approved`, `needs_changes`, `rejected`, `pending_human_approval`, `failed` | must own active review claim |
+| `mcp` | transition | `failed` | `needs_changes` | no claim path |
+| `mcp` | transition | `rejected` | `queued` | no claim path |
+| `mcp` | transition | `needs_changes` | `queued` | no claim path |
+| `operator` | administrative transition | any | any | no claim requirement |
 
-- `worker` cannot call reviewer-only routes
-- `reviewer` cannot call worker-only routes
-- `mcp` cannot call arbitrary mutating routes outside mapped tools
-- `readonly` cannot call mutating routes
-- `anonymous` cannot call protected Archon or runner ingress routes
-- wrong-scope calls must be denied with `403` and minimally audited
+## Negative rules
 
+- `worker` cannot transition to `approved`, `rejected`, or `pending_human_approval`
+- `reviewer` cannot transition to `working`
+- `reviewer` cannot write worker runs
+- `mcp` cannot call mutating routes without the matching tool scope header
+- `mcp` cannot bypass tool scope with a broad credential alone
+- request-body `owner` cannot spoof claim or release ownership

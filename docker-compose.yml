@@ -26,14 +26,25 @@ services:
       ARCHON_REQUIRE_HUMAN_APPROVAL: ${ARCHON_REQUIRE_HUMAN_APPROVAL:-true}
       ARCHON_WORKER_API_URL: http://openclaw-gateway:8091
       ARCHON_REVIEWER_API_URL: http://openclaw-gateway:8092
+      ARCHON_AUTH_CONFIG_FILE: /openclaw-config/archon-auth.json
+      ARCHON_RUNNER_TOKEN_FILE: /openclaw-config/archon.token
+      ARCHON_AUTH_REQUIRED: ${ARCHON_AUTH_REQUIRED:-true}
+      ARCHON_ALLOW_INSECURE_DEV: ${ARCHON_ALLOW_INSECURE_DEV:-false}
+      ARCHON_ENVIRONMENT: ${ARCHON_ENVIRONMENT:-dev}
+      ARCHON_RAW_OUTPUT_MODE: ${ARCHON_RAW_OUTPUT_MODE:-discard}
+      ARCHON_EXISTING_RAW_OUTPUT_POLICY: ${ARCHON_EXISTING_RAW_OUTPUT_POLICY:-redact}
+      ARCHON_RATE_LIMIT_PER_MINUTE: ${ARCHON_RATE_LIMIT_PER_MINUTE:-120}
+      ARCHON_RETENTION_DAYS: ${ARCHON_RETENTION_DAYS:-0}
+      ARCHON_AUDIT_DEGRADED_MODE: ${ARCHON_AUDIT_DEGRADED_MODE:-false}
     volumes:
       - ./.data/archon:/data
+      - ${OPENCLAW_CONFIG_DIR:-./.data/openclaw-config}:/openclaw-config:ro
     ports:
-      - "${ARCHON_PORT:-8080}:8080"
+      - "127.0.0.1:${ARCHON_PORT:-8080}:8080"
     networks:
       - harness
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -43,6 +54,8 @@ services:
     build:
       context: ./services/openclaw-runtime
       args:
+        # Pin digest in production for reproducible builds, e.g.:
+        # OPENCLAW_IMAGE=ghcr.io/openclaw/openclaw@sha256:...
         OPENCLAW_IMAGE: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     image: harness-openclaw-runtime:local
     pull_policy: never
@@ -97,6 +110,8 @@ services:
         condition: service_healthy
     environment:
       ARCHON_API_BASE_URL: http://archon:8080
+      ARCHON_API_TOKEN_FILE: /home/node/.openclaw/worker.token
+      ARCHON_AUTH_CONFIG_FILE: /home/node/.openclaw/archon-auth.json
       OPENCLAW_BIN: openclaw
       OPENCLAW_STATE_DIR: /home/node/.openclaw
       OPENCLAW_WORKSPACE_DIR: /workspace
@@ -110,7 +125,7 @@ services:
       - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
     command: ["python3", "/app/worker_loop.py"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/healthz"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -129,6 +144,8 @@ services:
         condition: service_healthy
     environment:
       ARCHON_API_BASE_URL: http://archon:8080
+      ARCHON_API_TOKEN_FILE: /home/node/.openclaw/reviewer.token
+      ARCHON_AUTH_CONFIG_FILE: /home/node/.openclaw/archon-auth.json
       OPENCLAW_BIN: openclaw
       OPENCLAW_STATE_DIR: /home/node/.openclaw
       OPENCLAW_WORKSPACE_DIR: /workspace
@@ -144,7 +161,7 @@ services:
       - ${OPENCLAW_WORKSPACE_DIR:-.}:/workspace
     command: ["python3", "/app/review_loop.py"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8092/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8092/healthz"]
       interval: 15s
       timeout: 5s
       retries: 10

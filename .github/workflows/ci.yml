@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Renderer + config verification
+        run: |
+          python3 scripts/render-openclaw-config.py --self-test
+          python3 scripts/render-openclaw-config.py --verify-file .openclaw/openclaw.json
+          if [[ -f .data/openclaw-config/openclaw.json ]]; then
+            python3 scripts/render-openclaw-config.py --verify-file .data/openclaw-config/openclaw.json
+          fi
+
+      - name: Compile Python (syntax)
+        run: |
+          python3 -m compileall -q scripts services/archon-control-plane services/archon-mcp services/openclaw-runtime
+
+      - name: Secret pattern guardrail
+        run: bash scripts/check-repo-secrets.sh
+
+      - name: Shell scripts (bash -n)
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f"
+          done

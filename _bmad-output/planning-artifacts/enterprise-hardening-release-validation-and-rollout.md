@@ -1,77 +1,96 @@
-# Release A Validation and Rollout Plan
+# Release A Validation and Rollout
 
-Date: 2026-04-24
+Status: Implemented for Release A  
+Date: 2026-04-25
 
-## Release A Exit Criteria
+## Release A exit criteria
 
-Release A is not approved until all of the following are true:
+- Archon fails closed on missing, empty, unreadable, and malformed auth config.
+- Distinct `operator`, `worker`, `reviewer`, `mcp`, `readonly`, and `archon` credentials exist.
+- MCP and runner ingress are protected.
+- Request IDs are generated or preserved and written to audit.
+- Raw output is server-controlled and default-off.
+- Minimal audit evidence is persisted in SQLite and queryable through `/audit`.
+- `/healthz`, `/readyz`, and the `/health` alias are implemented.
+- Release A security tests run in CI.
 
-- Archon protected routes fail closed on missing, invalid, and wrong-scope credentials.
-- Worker and reviewer `/run-once` endpoints are protected.
-- MCP mutating tools run under the `mcp` identity with scope enforcement.
-- Request IDs propagate across Archon, MCP, and runner paths.
-- Minimal audit exists for auth failures, authz denials, task mutations, review mutations, approval mutations, MCP mutations, and manual run triggers.
-- `raw_output` is default-off and tested for redaction and boundary behavior.
-- Authenticated operator commands, health checks, smoke checks, and live validation steps are documented.
+## Minimal audit model
 
-## Validation Matrix
+Storage target:
 
-| Validation area | Environment | Blocking | Evidence |
-|---|---|---|---|
-| Archon fail-closed auth | unit + integration | yes | negative-path tests |
-| Runner ingress protection | integration | yes | wrong-scope and unauthenticated tests |
-| MCP scoped mutation flow | integration | yes | request ID plus minimal audit assertions |
-| Request ID propagation | integration | yes | end-to-end trace assertions |
-| Minimal audit substrate | integration | yes | audit record assertions |
-| Raw output controls | unit + integration | yes | redaction, truncation, and retrieval tests |
-| Migration baseline | migration test env | yes before durable audit release | forward and idempotent migration tests |
-| Operator authenticated flow | staging-like | yes | smoke and live-validation execution |
+- SQLite table: `audit_events`
 
-## CI Reality Rule
+Persistence expectation:
 
-This planning set does not assume a working CI security pipeline already exists on the PR branch.
+- survives request, process, and container restart as long as the SQLite volume persists
 
-Implementation must choose one of two explicit paths:
+Failure behavior:
 
-- create the CI security validation workflow for this control-plane path, or
-- reconcile this backlog against a confirmed existing workflow and name it precisely
+- default mode is fail-closed for privileged mutations
+- if audit write fails and `ARCHON_AUDIT_DEGRADED_MODE=false`, the mutation returns `503`
+- readiness reflects degraded audit state through `/readyz`
 
-“Update CI as needed” is not acceptable.
+Required evidence captured in Release A:
 
-## Rollout Sequence
+- auth denials
+- scope denials
+- claim and release allow or deny
+- transition allow or deny
+- worker-run creation allow or deny
+- review creation allow or deny
+- approval creation allow or deny
+- raw-output discard or store decision
+- manual run triggers
 
-### Phase 0: Local and staging preparation
+## Raw output policy
 
-- generate credentials for all Release A identities
-- update operator commands and validation scripts
-- validate fail-closed behavior and request ID propagation
+- default: `ARCHON_RAW_OUTPUT_MODE=discard`
+- opt-in: `ARCHON_RAW_OUTPUT_MODE=store`
+- server decides persistence regardless of client payload
+- stored values are redacted before persistence
+- existing `raw_output` rows are redacted on startup by default through `ARCHON_EXISTING_RAW_OUTPUT_POLICY=redact`
 
-### Phase 1: Staging execution
+## Health migration
 
-- run authenticated smoke path
-- run manual trigger path through Archon
-- validate MCP scoped mutation path
-- validate raw output default-off behavior
+- `/healthz` is the canonical liveness endpoint
+- `/readyz` is the canonical readiness endpoint
+- `/health` remains a Release A alias to `/healthz`
+- compose healthchecks now point to `/healthz`
+- validation scripts exercise both liveness and readiness where relevant
 
-### Phase 2: Hardened rollout
+## Operator rollout
 
-- enable Release A controls in the target environment
-- execute runbook validation
-- confirm operator and readonly flows
+Operator examples and scripts now use:
 
-### Phase 3: Durable audit release
+- `operator.token` for mutating Archon commands
+- `healthz` and `readyz` for liveness/readiness checks
+- authenticated smoke and live-validation scripts
 
-- run schema migration path
-- validate durable audit persistence and query paths
-- execute restore or rollback procedure as documented
+## CI gate
 
-## Rollback and Restore Rule
+Blocking workflow:
 
-If a change cannot be rolled back cleanly, the corresponding story must require a tested restore procedure instead.
+- `./.github/workflows/release-a-security.yml`
 
-That applies especially to:
+Release A workflow coverage:
 
-- schema changes
-- credential rotations
-- retention or purge behavior
+- fail-closed auth config
+- credential lifecycle acceptance and rejection
+- wrong-scope and wrong-identity denial
+- state/action authorization matrix
+- identity-bound claim and release behavior
+- MCP direct-route bypass denial
+- raw-output server-side default-off
+- minimal audit persistence and failure behavior
+- runner ingress protection
+- health migration behavior
+- request ID propagation
 
+## Rollback rule
+
+Release A rollback must not weaken fail-closed auth. If rollback is required:
+
+- retain `ARCHON_AUTH_REQUIRED=true`
+- keep per-service token files mounted
+- keep `archon-auth.json` present and readable
+- restore from the last known-good image and SQLite backup rather than disabling auth

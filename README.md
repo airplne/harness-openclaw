@@ -62,9 +62,20 @@ The only authoritative review scheduler is the `openclaw-reviewer` service runni
 ### 1) Prepare local config
 
 ```bash
-cp .env.example .env
 bash scripts/bootstrap.sh
 ```
+
+The bootstrap step generates:
+
+- `.data/openclaw-config/archon-auth.json`
+- `.data/openclaw-config/operator.token`
+- `.data/openclaw-config/worker.token`
+- `.data/openclaw-config/reviewer.token`
+- `.data/openclaw-config/mcp.token`
+- `.data/openclaw-config/readonly.token`
+- `.data/openclaw-config/archon.token`
+
+`archon-auth.json` stores hashed token metadata only. Plaintext token files are mounted read-only into the services that need them.
 
 ### 2) Start the stack
 
@@ -78,6 +89,8 @@ docker compose up -d --build
 bash scripts/onboard-openclaw.sh
 ```
 
+Re-runs: set `SKIP_OPENCLAW_CODEX_ONBOARD=1` and/or `SKIP_OPENCLAW_OLLAMA_ONBOARD=1` if you already completed those OpenClaw onboard steps and only need agent seeding.
+
 That onboarding flow:
 
 - runs OpenClaw onboarding in the runtime image
@@ -87,12 +100,19 @@ That onboarding flow:
 - verifies rendered config is scrubbed of deprecated fallback and fake-auth keys
 - fails if manual non-OAuth credentials remain for the governed reviewer provider `openai-codex`
 
+### Diagnostics and CI
+
+- **Local checks:** `bash scripts/doctor.sh`
+- **CI:** `.github/workflows/ci.yml` and `.github/workflows/release-a-security.yml`
+
 ## Exact operator commands
 
 Create a task:
 
 ```bash
+ARCHON_API_TOKEN="$(cat .data/openclaw-config/operator.token)"
 curl -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer ${ARCHON_API_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Implement repo change",
@@ -105,29 +125,40 @@ curl -X POST http://localhost:8080/tasks \
 Run one worker cycle immediately:
 
 ```bash
-curl -X POST http://localhost:8080/work/run -H "Content-Type: application/json" -d '{}'
+ARCHON_API_TOKEN="$(cat .data/openclaw-config/operator.token)"
+curl -X POST http://localhost:8080/work/run \
+  -H "Authorization: Bearer ${ARCHON_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 Run one review cycle immediately:
 
 ```bash
-curl -X POST http://localhost:8080/reviews/run -H "Content-Type: application/json" -d '{}'
+ARCHON_API_TOKEN="$(cat .data/openclaw-config/operator.token)"
+curl -X POST http://localhost:8080/reviews/run \
+  -H "Authorization: Bearer ${ARCHON_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 List persisted state:
 
 ```bash
-curl http://localhost:8080/tasks | jq
-curl http://localhost:8080/claims | jq
-curl http://localhost:8080/worker-runs | jq
-curl http://localhost:8080/reviews | jq
-curl http://localhost:8080/approvals | jq
+ARCHON_API_TOKEN="$(cat .data/openclaw-config/operator.token)"
+curl -H "Authorization: Bearer ${ARCHON_API_TOKEN}" http://localhost:8080/tasks | jq
+curl -H "Authorization: Bearer ${ARCHON_API_TOKEN}" http://localhost:8080/claims | jq
+curl -H "Authorization: Bearer ${ARCHON_API_TOKEN}" http://localhost:8080/worker-runs | jq
+curl -H "Authorization: Bearer ${ARCHON_API_TOKEN}" http://localhost:8080/reviews | jq
+curl -H "Authorization: Bearer ${ARCHON_API_TOKEN}" http://localhost:8080/approvals | jq
 ```
 
 Approve or reject:
 
 ```bash
+ARCHON_API_TOKEN="$(cat .data/openclaw-config/operator.token)"
 curl -X POST http://localhost:8080/approvals \
+  -H "Authorization: Bearer ${ARCHON_API_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "task_id": 1,
@@ -174,22 +205,40 @@ Artifacts are written under `.data/validation/latest`.
 
 ## Validation checklist
 
-Archon health:
+Archon liveness:
 
 ```bash
-curl http://localhost:8080/health | jq
+curl http://localhost:8080/healthz | jq
 ```
 
-Worker health:
+Archon readiness:
 
 ```bash
-docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/health | jq
+curl http://localhost:8080/readyz | jq
 ```
 
-Reviewer health:
+Worker liveness:
 
 ```bash
-docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/health | jq
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/healthz | jq
+```
+
+Worker readiness:
+
+```bash
+docker compose exec -T openclaw-worker curl -fsS http://127.0.0.1:8091/readyz | jq
+```
+
+Reviewer liveness:
+
+```bash
+docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/healthz | jq
+```
+
+Reviewer readiness:
+
+```bash
+docker compose exec -T openclaw-reviewer curl -fsS http://127.0.0.1:8092/readyz | jq
 ```
 
 Gateway health through the CLI container:
@@ -225,6 +274,13 @@ python3 scripts/render-openclaw-config.py --self-test | jq
 
 ## Important runtime notes
 
+- Archon is fail-closed by default. Missing, empty, unreadable, or malformed `ARCHON_AUTH_CONFIG_FILE` prevents startup.
+- Service credentials are opaque bearer tokens. Server metadata lives in `.data/openclaw-config/archon-auth.json` with `key_id`, `identity`, `scopes`, `state`, and `token_hash`.
+- Credential states are `active`, `next`, `retired`, and `revoked`. `active` and `next` are accepted; `retired` and `revoked` are rejected.
+- Claim ownership is identity-derived. `claim_owner` and release ownership are bound to the authenticated credential `key_id`, not trusted from request payloads.
+- `raw_output` is server-controlled. `ARCHON_RAW_OUTPUT_MODE=discard` is the default. Existing rows are redacted on startup by default through `ARCHON_EXISTING_RAW_OUTPUT_POLICY=redact`.
+- Minimal audit lives in the Archon SQLite `audit_events` table. If audit writes fail and `ARCHON_AUDIT_DEGRADED_MODE=false`, privileged mutations fail with `503` and `/readyz` reports the degraded state.
+- `/health` remains a temporary alias for `/healthz` in Release A. `/healthz` is anonymous liveness. `/readyz` is readiness and does not disclose token material or file contents.
 - The worker/reviewer split is enforced by **dedicated OpenClaw agents** and by runtime validation of the bound model for each agent.
 - The only active review scheduler is `openclaw-reviewer` using `services/openclaw-runtime/review_loop.py`; `REVIEW_CRON` configures that service cadence and the OpenClaw config intentionally does not emit independent `cronJobs`.
 - The reviewer service rejects healthy status unless:
